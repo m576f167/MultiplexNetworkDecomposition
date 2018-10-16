@@ -1,0 +1,54 @@
+---
+title: "MindPaths_Simulation"
+author: "Mohammad Isyroqi Fathan"
+date: "October 6, 2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r library, include = FALSE}
+## Include/Use libraries
+library(dplyr)
+library(igraph)
+library(ggplot2)
+library(ggtern)
+library(truncnorm)
+library(wordnet)
+library(RSQLite)
+library(parallel)
+library(rPython)
+library(expm)
+library(entropy)
+```
+
+```{r define_variables}
+list_file = list()
+list_raw_data = list()
+list_norm = list()
+list_network = list()
+list_ig_network = list()
+```
+
+```{r load_RData}
+load('../../RData/NIPS/NIPS.RData')
+```
+
+```{r multicore_setup}
+no_of_cores = detectCores()
+```
+
+```{r open_db, include = FALSE}
+# Name of SQLite database file
+list_file$db_file = "../../Data/Processed/MindPaths/MindPaths_v1.db"
+
+# Connect to SQLite database file
+db_connection = dbConnect(RSQLite::SQLite(), dbname = list_file$db_file)
+print("Database opened\n")
+```
+
+```{r simulate}
+
+```

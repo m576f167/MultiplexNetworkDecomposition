@@ -1,0 +1,75 @@
+---
+title: "MindPaths_Build_Networks_Phonology"
+author: "Mohammad Isyroqi Fathan"
+date: "October 6, 2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r library, include = FALSE}
+## Include/Use libraries
+library(dplyr)
+library(igraph)
+library(ggplot2)
+library(ggtern)
+library(truncnorm)
+library(wordnet)
+library(RSQLite)
+library(parallel)
+library(rPython)
+library(expm)
+library(entropy)
+```
+
+```{r define_variables}
+list_file = list()
+list_raw_data = list()
+list_norm = list()
+list_network = list()
+list_ig_network = list()
+```
+
+```{r load_RData}
+load('../../RData/NIPS/NIPS.RData')
+```
+
+```{r multicore_setup}
+no_of_cores = detectCores()
+```
+
+```{r open_db, include = FALSE}
+# Name of SQLite database file
+list_file$db_file = "../../Data/Processed/MindPaths/MindPaths_v1.db"
+
+# Connect to SQLite database file
+db_connection = dbConnect(RSQLite::SQLite(), dbname = list_file$db_file)
+print("Database opened\n")
+```
+
+```{r build_network}
+tmp = list()
+tmp$word_list = rownames(list_network$nelson_unweighted)
+tmp$max_word_length = max(sapply(tmp$word_list, function(word){nchar(word)}))
+tmp$networks = mclapply(mc.cores = no_of_cores, 1:tmp$max_word_length, function(index, word_list){
+		print(index)
+		tmp_matrix = matrix(0, length(word_list), length(word_list))
+		for (i in 1:nrow(tmp_matrix)) {
+			for (j in 1:nrow(tmp_matrix)) {
+				word_1 = strsplit(word_list[[i]], split = "")[[1]]
+				word_2 = strsplit(word_list[[j]], split = "")[[1]]
+				if (sum(word_1 == word_2) >= index) {
+					tmp_matrix[i, j] = index
+				}
+			}
+		}
+	}, tmp$word_list)
+
+rm(tmp)
+```
+
+```{r save_RData}
+save(list = ls(), file = '../../RData/NIPS/NIPS.RData')
+```

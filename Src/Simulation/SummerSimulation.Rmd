@@ -1,0 +1,1203 @@
+---
+title: "MindPaths_Simulation"
+author: "Mohammad Isyroqi Fathan"
+date: "October 6, 2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r library, include = FALSE}
+## Include/Use libraries
+library(dplyr)
+library(reshape)
+library(igraph)
+library(ggplot2)
+library(ggtern)
+library(truncnorm)
+library(wordnet)
+library(RSQLite)
+library(parallel)
+library(rPython)
+library(expm)
+library(entropy)
+library(boot)
+```
+
+```{r Functions}
+CalculateAggregatedMultiplexAdjacencyMatrix <- function(networks, weights){
+  return(Reduce("+", mapply(function(network, weight){
+      return(weight * network)
+    }, networks, weights, SIMPLIFY = FALSE))
+  )
+}
+
+CalculateProbabilityMatrix <- function(adjacency_matrix_aggregate){
+  # Probability_i_j = Value_i_j/sum_per_row 
+  row_normalizing_constant = 1/apply(adjacency_matrix_aggregate, 1, sum)
+  row_normalizing_constant[which(is.infinite(row_normalizing_constant))] <- 0
+  return(adjacency_matrix_aggregate * row_normalizing_constant)
+}
+##============================================================================================================================
+### Trace Generation
+GenerateTrace <- function(probability_matrix, starting_node, path_length){
+  path_trace = list(starting_node)
+  for (i in 1:path_length){
+    # Traverse one node from current node
+    path_trace[[i+1]] = sample(1:dim(probability_matrix)[1], size = 1, prob = probability_matrix[path_trace[[i]], ])
+  }
+  return(path_trace)
+}
+
+## To Do: Fix and optimize how to get Transition Matrix (Problem is how to do pass by reference)
+CalculateTraceMatrix <- function(traces, number_of_nodes){
+  # # For every trace in traces, create trace_matrix. Then Reduce with "+".
+  # Reduce("+", lapply(traces, function(path_trace){
+  #   # Create trace_matrix per trace
+  #   trace_matrix = matrix(0, number_of_nodes, number_of_nodes)
+  #   for (i in 1:(length(path_trace) - 1)){
+  #     trace_matrix[path_trace[[i]], path_trace[[i + 1]]] = trace_matrix[path_trace[[i]], path_trace[[i + 1]]] + 1
+  #   }
+  #   return(trace_matrix)
+  # }))
+  trace_matrix = matrix(0, number_of_nodes, number_of_nodes)
+  for (i in 1:length(traces)){
+    for(j in 1:(length(traces[[i]]) - 1)){
+      trace_matrix[traces[[i]][[j]], traces[[i]][[j + 1]]] = trace_matrix[traces[[i]][[j]], traces[[i]][[j + 1]]] + 1
+    }
+  }
+  return(trace_matrix)
+}
+
+GenerateTraceForRandomNNode <- function(probability_matrix, path_length, number_of_nodes, probability_starting_node = NULL){
+  return(lapply(1:number_of_nodes, function(i, probability_matrix, path_length, probability_starting_node){
+            # Initialize starting_node to NULL
+            starting_node = NULL
+            if (is.null(probability_starting_node)) {
+              # Sampling starting_node from uniform distribution
+              starting_node = sample(1:dim(probability_matrix)[1], 1)
+            }
+            else {
+              # Sampling starting_node from probability_starting_node distribution
+              starting_node = sample(1:dim(probability_matrix)[1], 1, prob = probability_starting_node)
+            }
+            GenerateTrace(probability_matrix, starting_node, path_length)
+         }, probability_matrix, path_length, probability_starting_node))
+}
+##============================================================================================================================
+### Additional Calculation
+CalculateLogLikelihood <- function(trace_matrix, probability_matrix, is_log = TRUE){
+	if (is_log) {
+		# Note: Do we have to perform log on each element? Or can we regard them just like the same result?
+		log_probability_matrix = log(probability_matrix)
+		log_probability_matrix[is.infinite(log_probability_matrix)] <- 0
+		return(Reduce("+",
+			trace_matrix * log_probability_matrix
+		 ))
+	}
+	else {
+		return(Reduce("+", 
+			trace_matrix * probability_matrix))
+	}
+}
+
+CalculateLogLikelihoodFromAdjacencyMatrix <- function(adjacency_matrix, weight_vector, traces, distance_mode = FALSE, is_log = TRUE){
+  # Calculate aggregated multiplex adjacency matrices
+  adjacency_matrix_aggregate = CalculateAggregatedMultiplexAdjacencyMatrix(adjacency_matrix, weight_vector)
+    
+  # Calculate probability matrix
+  probability_matrix = CalculateProbabilityMatrix(adjacency_matrix_aggregate)
+  
+  # Use distance if distance_mode is TRUE
+  if (distance_mode) {
+    
+  }
+    
+  # Calculate Log-Likelihood
+  return(CalculateLogLikelihood(traces, probability_matrix, is_log))
+}
+
+
+#### Markov Chain Monte Carlo
+MCMC <- function(adjacency_matrix, traces, number_of_sample, starting_pont, standard_deviation, proposal_distribution = NULL, is_log = TRUE){
+	tmp = is_log
+  # Account for the case if number_of_layers <= 1
+  number_of_layers = max(2, length(starting_pont))
+  
+  # Account for number_of_sample <= 1
+  number_of_sample = max(2, number_of_sample)
+  
+  # Initialize sample list and log_likelihood_list
+  sample_list = list(starting_pont)
+  
+  log_likelihood_list = list(CalculateLogLikelihoodFromAdjacencyMatrix(adjacency_matrix, starting_pont, traces, is_log = is_log))
+  
+  for (i in 1:(number_of_sample - 1)) {
+    # Initialize sum_of_weight
+    sum_of_weight = 0
+          
+    # Initialize new_point to last
+    new_point  = sample_list[[i]]
+    
+    # Sample acceptance_probability(u) from uniform distribution
+    acceptance_probability = runif(1, 0, 1)
+      
+    for (j in 1:(number_of_layers - 1)) {
+      
+      # Sample new_point_j
+      if (is.null(proposal_distribution)) {
+        # Use truncated normal distribution
+        new_point[j] = rtruncnorm(1, 0, 1 - sum_of_weight, new_point[j], sd = standard_deviation)
+      }
+      else {
+        # Use proposal_distribution
+        new_point[j] = sample(seq(0, 1 - sum_of_weight, 1/length(proposal_distribution)), 1, prob = proposal_distribution)
+      }
+      
+      # Update sum_of_weight
+      sum_of_weight = sum(new_point[1:j])
+    }
+    
+    # Account for the case if number_of_layers <= 1
+    if (!is.na(new_point[number_of_layers])) {
+      new_point[number_of_layers] = 1 - sum_of_weight
+    }
+    
+    # Calculate new Log-Likelihood
+    new_log_likelihood = CalculateLogLikelihoodFromAdjacencyMatrix(adjacency_matrix, new_point, traces, is_log = is_log)
+    
+    # Check acceptance criteria (Currently use e^(- (diff of negative_log_likelihood)). Note: should we use e^(-(cost_diff)) or just (new_cost/old_cost)
+    if (acceptance_probability < min(1, exp((new_log_likelihood - log_likelihood_list[[i]])))) {
+      sample_list[[i + 1]] = new_point
+      log_likelihood_list[[i + 1]] = new_log_likelihood
+    }
+    else {
+      sample_list[[i + 1]] = sample_list[[i]]
+      log_likelihood_list[[i + 1]] =  log_likelihood_list[[i]]
+    }
+  }
+  
+  # Combine sample_list and log_likelihood_list as a dataframe
+  result_dataframe = Reduce(rbind, mapply(function(sample, log_likelihood){
+                              result = data.frame(t(sample))
+                              result$value = log_likelihood
+                              return(result)
+                            }, sample_list, log_likelihood_list, SIMPLIFY = FALSE))
+  return(result_dataframe)
+}
+```
+
+
+```{r list_simulation}
+list_simulation_1 = list()
+```
+
+```{r simulation_1}
+# Simulate synthetic data unweighted
+# Define Variables
+list_simulation_1$parameter = list()
+list_simulation_1$parameter$network_density_probability = c(0.01, 0.0008, 0.01)
+list_simulation_1$parameter$n = 1972
+# list_simulation_1$parameter$network_weights = c(0.2, 0.3, 0.5)
+list_simulation_1$parameter$network_weights = c(0.63, 0.11, 0.26)
+#list_simulation_1$parameter$network_weights = c(0.18, 0.37, 0.45)
+list_simulation_1$parameter$number_of_traces = 1000
+
+# ER Network
+# Generate Network
+list_simulation_1$ER = list()
+list_simulation_1$ER$network = lapply(list_simulation_1$parameter$network_density_probability, erdos.renyi.game, n = list_simulation_1$parameter$n, type = c("gnp", "gnm"), directed = TRUE, loops = FALSE)
+list_simulation_1$ER$network = lapply(list_simulation_1$ER$network, as_adjacency_matrix, sparse = FALSE)
+
+# Generate Multiplex Network
+list_simulation_1$ER$Aggregate = CalculateAggregatedMultiplexAdjacencyMatrix(list_simulation_1$ER$network, list_simulation_1$parameter$network_weights)
+
+# Calculate Probability Matrix
+list_simulation_1$ER$Probability = CalculateProbabilityMatrix(list_simulation_1$ER$Aggregate)
+
+# Generate Random Traces
+list_simulation_1$ER$traces = GenerateTraceForRandomNNode(list_simulation_1$ER$Probability, 25, list_simulation_1$parameter$number_of_traces)
+
+# Generate Trace Matrix
+list_simulation_1$ER$traces_matrix = CalculateTraceMatrix(list_simulation_1$ER$traces, list_simulation_1$parameter$n)
+
+# Regular Network
+# Generate Network
+list_simulation_1$Regular = list()
+list_simulation_1$Regular$network = lapply(list_simulation_1$parameter$network_density_probability * list_simulation_1$parameter$n, sample_k_regular, no.of.nodes = list_simulation_1$parameter$n, directed = TRUE, multiple = FALSE)
+list_simulation_1$Regular$network = lapply(list_simulation_1$Regular$network, as_adjacency_matrix, sparse = FALSE)
+
+# Generate Multiplex Network
+list_simulation_1$Regular$Aggregate = CalculateAggregatedMultiplexAdjacencyMatrix(list_simulation_1$Regular$network, list_simulation_1$parameter$network_weights)
+
+# Calculate Probability Matrix
+list_simulation_1$Regular$Probability = CalculateProbabilityMatrix(list_simulation_1$Regular$Aggregate)
+
+# Generate Random Traces
+list_simulation_1$Regular$traces = GenerateTraceForRandomNNode(list_simulation_1$Regular$Probability, 25, list_simulation_1$parameter$number_of_traces)
+
+# Generate Trace Matrix
+list_simulation_1$Regular$traces_matrix = CalculateTraceMatrix(list_simulation_1$Regular$traces, list_simulation_1$parameter$n)
+```
+
+```{r analyze}
+starting_point = runif(3)
+starting_point = starting_point/sum(starting_point)
+tmp = MCMC(list_simulation_1$ER$network, list_simulation_1$ER$traces_matrix, 500, starting_point , standard_deviation = 0.015)
+```
+
+```{r analyze}
+coba_starting_point = c(0, 0, 1)
+coba_tmp = MCMC(list_simulation_1$ER$network, list_simulation_1$ER$traces_matrix, 300, coba_starting_point , standard_deviation = 0.015)
+```
+```{r brute_force}
+sweep_result = BruteForce(list_simulation_1$ER$network, list_simulation_1$ER$traces_matrix, CalculateLogLikelihoodFromAdjacencyMatrix, 20)
+```
+
+```{r a}
+sweep_result_w1 = list()
+i = 1
+for(w1 in seq(0, 1, 1/20)){
+	sweep_result_w1[[i]] = sweep_result[which(sweep_result$w1 == w1), ]
+		sweep_result_w1[[i]] = sweep_result_w1[[i]][apply(sweep_result_w1[[i]], c(1), function(x){
+				      if (length(which(x == 0)) > 0){
+					      return(FALSE)
+				      }
+				      else {
+					      return(TRUE)
+				      }
+  }), ]
+	if(dim(sweep_result_w1[[i]])[1] > 0){
+		i = i + 1
+	}
+	else {
+		sweep_result_w1[[i]] = NULL
+	}
+}
+
+sweep_result_w2 = list()
+i = 1
+for(w2 in seq(0, 1, 1/20)){
+	sweep_result_w2[[i]] = sweep_result[which(sweep_result$w2 == w2), ]
+		sweep_result_w2[[i]] = sweep_result_w2[[i]][apply(sweep_result_w2[[i]], c(1), function(x){
+				      if (length(which(x == 0)) > 0){
+					      return(FALSE)
+				      }
+				      else {
+					      return(TRUE)
+				      }
+  }), ]
+	if(dim(sweep_result_w2[[i]])[1] > 0){
+		i = i + 1
+	}
+	else {
+		sweep_result_w2[[i]] = NULL
+	}
+}
+
+sweep_result_w3 = list()
+i = 1
+for(w3 in seq(0, 1, 1/20)){
+	sweep_result_w3[[i]] = sweep_result[which(sweep_result$w3 == w3), ]
+		sweep_result_w3[[i]] = sweep_result_w3[[i]][apply(sweep_result_w3[[i]], c(1), function(x){
+				      if (length(which(x == 0)) > 0){
+					      return(FALSE)
+				      }
+				      else {
+					      return(TRUE)
+				      }
+  }), ]
+	if(dim(sweep_result_w3[[i]])[1] > 0){
+		i = i + 1
+	}
+	else {
+		sweep_result_w3[[i]] = NULL
+	}
+}
+rm(w1, w2, w3, i)
+PlotSweep <- function(result_list, index, index_weight, remove_zeros = TRUE){
+	df = result_list[[index]]
+	if (remove_zeros){
+		df = df[apply(df, c(1), function(x){
+				      if (length(which(x == 0)) > 0){
+					      return(FALSE)
+				      }
+				      else {
+					      return(TRUE)
+				      }
+  }), ]
+	}
+	ggplot(df, aes_string(x = index_weight, y = "likelihood")) + geom_point() + geom_line()
+}
+```
+
+```{r brute_force_function}
+BruteForce <- function(adjacency_matrix, traces, likelihood_function, number_of_points = 100){
+	result = mclapply(mc.cores = detectCores() - 1, seq(0, 1, 1/number_of_points), function(weight_1, likelihood_function, adjacency_matrix, traces){
+		  print(weight_1)
+		  lapply(seq(0, 1 - weight_1, 1/number_of_points), function(weight_2, weight_1, likelihood_function, adjacency_matrix, traces){
+				 list(c(weight_1, weight_2, 1 - (weight_1 + weight_2)), likelihood_function(adjacency_matrix, c(weight_1, weight_2, 1 - (weight_1 + weight_2)), traces))
+			    }, weight_1, likelihood_function, adjacency_matrix, traces)
+  }, likelihood_function, adjacency_matrix, traces)
+	df = data.frame()
+	alpha = 1/number_of_points
+	for (i in 1:length(result)){
+		for (j in 1:length(result[[i]])){
+			df = rbind(df, data.frame(w1 = result[[i]][[j]][[1]][[1]],
+						  w2 = result[[i]][[j]][[1]][[2]],
+						  w3 = result[[i]][[j]][[1]][[3]],
+						  likelihood = result[[i]][[j]][[2]]))
+		}
+	}
+	return(df)
+}
+```
+```{r Optimize}
+quadratic <- function(x, adjacency_matrix = NULL, trace_matrix = NULL){
+	return(sum(x ^ 2))
+}
+GoldenSection <- function(weight_vector, direction, adjacency_matrix, trace_matrix, alpha_max, ObjectiveFunction, number_of_iteration, probability_multiplex_matrix = NULL ){
+
+	golden_ratio = (1+sqrt(5))/2
+
+	lower_bound_alpha = 0
+	upper_bound_alpha = alpha_max
+	uncertainty_width = alpha_max
+
+	last_alpha = upper_bound_alpha - uncertainty_width/golden_ratio
+	current_alpha = upper_bound_alpha - uncertainty_width/golden_ratio
+	last_objective = ObjectiveFunction(weight_vector + current_alpha * direction, adjacency_matrix, trace_matrix)
+	origin_objective = ObjectiveFunction(weight_vector, adjacency_matrix, trace_matrix)
+
+	is_alpha_search_direction_right = TRUE
+
+	for ( i in 1:number_of_iteration ){
+		if (is_alpha_search_direction_right){
+			current_alpha = lower_bound_alpha + uncertainty_width/golden_ratio
+			current_objective = ObjectiveFunction(weight_vector + current_alpha * direction, adjacency_matrix, trace_matrix)
+
+			if (current_objective > last_objective){
+				upper_bound_alpha = current_alpha
+				uncertainty_width = upper_bound_alpha - lower_bound_alpha
+
+				is_alpha_search_direction_right = FALSE
+			}
+			else {
+				lower_bound_alpha = last_alpha
+				uncertainty_width = upper_bound_alpha - lower_bound_alpha
+
+				last_alpha = current_alpha
+				last_objective = current_objective
+			}
+		}
+		else {
+			current_alpha = upper_bound_alpha - uncertainty_width/golden_ratio
+			current_objective = ObjectiveFunction(weight_vector + current_alpha * direction, adjacency_matrix, trace_matrix)
+
+			if (current_objective > last_objective){
+				lower_bound_alpha = current_alpha
+				uncertainty_width = upper_bound_alpha - lower_bound_alpha
+
+				is_alpha_search_direction_right = TRUE
+			}
+			else {
+				upper_bound_alpha = last_alpha
+				uncertainty_width = upper_bound_alpha - lower_bound_alpha
+
+				last_alpha = current_alpha
+				last_objective = current_objective
+			}
+		}
+	}
+
+	if (last_objective > origin_objective) {
+		print("here")
+		return(0)
+	}
+	else {
+		return (last_alpha)
+	}
+
+}
+
+ObjectiveSSE <- function(weight_vector, adjacency_matrix, trace_matrix, probability_multiplex_matrix = NULL){
+	if (is.null(probability_multiplex_matrix)){
+		probability_multiplex_matrix = Reduce("+", mapply(function(network, weight){return(weight * network)}, adjacency_matrix, weight_vector, SIMPLIFY = FALSE))
+		probability_multiplex_matrix = CalculateProbabilityMatrix(probability_multiplex_matrix)
+	}
+	sse = sum((trace_matrix - probability_multiplex_matrix) ^ 2)
+	return(sse)
+}
+
+GradientSSE <- function(weight_vector, adjacency_matrix, trace_matrix, multiplex_matrix = NULL, probability_multiplex_matrix = NULL){
+	if (is.null(multiplex_matrix)) {
+		multiplex_matrix = Reduce("+", mapply(function(network, weight){return(weight * network)}, adjacency_matrix, weight_vector, SIMPLIFY = FALSE))
+		multiplex_matrix = CalculateProbabilityMatrix(multiplex_matrix)
+	}
+	if (is.null(probability_multiplex_matrix)) {
+		probability_multiplex_matrix = Reduce("+", mapply(function(network, weight){return(weight * network)}, adjacency_matrix, weight_vector, SIMPLIFY = FALSE))
+		probability_multiplex_matrix = CalculateProbabilityMatrix(probability_multiplex_matrix)
+	}
+	number_of_layers = length(adjacency_matrix) - 1
+	adjacency_matrix = lapply(adjacency_matrix, function(network, last_network){ return(abs(network - last_network)) }, adjacency_matrix[[number_of_layers + 1]])
+	gradient_vector = c()
+	difference = trace_matrix - probability_multiplex_matrix
+	row_normalizing_constant = 1/apply(multiplex_matrix, 1, sum)
+	row_normalizing_constant[which(is.infinite(row_normalizing_constant))] <- 0
+	for (j in 1:number_of_layers){
+# 		gradient_vector_j = (adjacency_matrix[[j]] * row_normalizing_constant) - (probability_multiplex_matrix * ( apply(adjacency_matrix[[j]], 1, sum) * row_normalizing_constant))
+		gradient_vector_j = trace_matrix * (row_normalizing_constant * (adjacency_matrix[[j]]  - (probability_multiplex_matrix * apply(adjacency_matrix[[j]], 1, sum))))
+		gradient_vector = c(gradient_vector, sum(gradient_vector_j))
+	}
+	gradient_vector[number_of_layers + 1] = 1 - sum(gradient_vector)
+	return(gradient_vector)
+}
+
+GradientDescent <- function(weight_vector, adjacency_matrix, trace_matrix, ObjectiveFunction, GradientFunction, alpha_max, lambda = 0, max_iteration = 1000, line_search_iteration = 7){
+	normal_vector = rep(1, length(adjacency_matrix) - 1)
+	normal_vector = normal_vector / sqrt(sum(normal_vector ^ 2))
+	weight_vector = weight_vector / sum(weight_vector)
+	print(weight_vector)
+	list_point = list(weight_vector)
+	adjacency_matrix = lapply(adjacency_matrix, function(network, trace_matrix){return(network * (trace_matrix > 0))}, trace_matrix)
+	multiplex_matrix = Reduce("+", mapply(function(network, weight){return(weight * network)}, adjacency_matrix, weight_vector, SIMPLIFY = FALSE))
+	probability_multiplex_matrix = CalculateProbabilityMatrix(multiplex_matrix)
+	list_objective = list(ObjectiveFunction(weight_vector, adjacency_matrix, trace_matrix, probability_multiplex_matrix) + sum(lambda * weight_vector))
+	i = 1
+	is_finished = i > max_iteration
+
+	while (!is_finished){
+		i = i + 1
+		print("====")
+		print(i)
+		gradient_vector = GradientFunction(weight_vector, adjacency_matrix, trace_matrix, multiplex_matrix, probability_multiplex_matrix)
+		# Project to sum(weight_vector) = 1
+		#print(gradient_vector)
+		#gradient_vector = gradient_vector - as.vector(gradient_vector %*% normal_vector) * normal_vector
+		#print(sqrt(sum(gradient_vector ^ 2)))
+		gradient_vector = gradient_vector / sqrt(sum(gradient_vector ^ 2))
+		print(gradient_vector)
+		alpha = 0.1
+		#alpha = GoldenSection(weight_vector, gradient_vector, adjacency_matrix, trace_matrix, alpha_max, ObjectiveFunction, line_search_iteration)
+		print(alpha)
+		weight_vector = weight_vector - alpha * gradient_vector
+# 		if (Reduce("|", weight_vector < 0)){
+# 			negative_error = sum(weight_vector[which(weight_vector < 0)])
+# 			negative_error = negative_error/length(which(weight_vector >= 0))
+# 			weight_vector[which(weight_vector >= 0)] = weight_vector[which(weight_vector >= 0)] + negative_error
+# 
+# 			weight_vector[which(weight_vector < 0)] = 0
+# 		}
+		print(weight_vector)
+		print(sum(weight_vector))
+		list_point[[i]] = weight_vector
+		list_objective[[i]] = (ObjectiveFunction(weight_vector, adjacency_matrix, trace_matrix, multiplex_matrix) + sum(lambda * weight_vector))
+		print(list_objective[[i]])
+
+# 		if (list_objective[[i]] > list_objective[[i - 1]]){
+# 			alpha = alpha * 0.8
+# 			print("Alpha Changed")
+# 			print(alpha)
+# 		}
+
+		multiplex_matrix = Reduce("+", mapply(function(network, weight){return(weight * network)}, adjacency_matrix, weight_vector, SIMPLIFY = FALSE))
+		probability_multiplex_matrix = CalculateProbabilityMatrix(multiplex_matrix)
+
+		is_finished = ((FALSE) | (i > max_iteration))
+	}
+
+	result_dataframe = Reduce(rbind, mapply(function(sample, likelihood){
+		result = data.frame(t(sample))
+		result$value = likelihood
+		return(result)
+	  }, list_point, list_objective, SIMPLIFY = FALSE))
+
+	return(result_dataframe)
+
+}
+
+starting_point = runif(3)
+starting_point = starting_point/sum(starting_point)
+tmp = GradientDescent(starting_point, list_simulation_1$ER$network, CalculateProbabilityMatrix(list_simulation_1$ER$traces_matrix), ObjectiveSSE, GradientSSE, 0.2)
+ggtern(data = tmp[1:50, ], aes(X1, X2, X3, color = value)) + scale_color_gradient(low = "green", high = "red") + theme_rgbw() + geom_point() + geom_path() + labs(x = "X1", y = "X2", z = "X3", title = "Ternary Learning Plot")
+
+	x = lapply(seq(0, 1, 1/20), function(weight_1){
+		  lapply(seq(0, 1 - weight_1, 1/20), function(weight_2, weight_1){
+				 list(c(weight_1, weight_2, 1 - (weight_1 + weight_2)))
+			    }, weight_1)
+  })
+	df = data.frame()
+	for (i in 1:length(x)){
+		for (j in 1:length(x[[i]])){
+			df = rbind(df, data.frame(w1 = x[[i]][[j]][[1]][[1]],
+						  w2 = x[[i]][[j]][[1]][[2]],
+						  w3 = x[[i]][[j]][[1]][[3]]))
+		}
+	}
+
+	C = list()
+	for (i in 1:dim(df)[1]){
+		x = as.numeric(df[i, ])
+		if (length(which(x == 0)) > 0){
+			C[[i]] = 0
+		}
+		else{
+			C[[i]] = as.numeric((x %*% A)/sum(x %*% A)) * B 
+		}
+	}
+	C = sapply(C, sum)
+	
+```
+
+```{r try_to_optimize}
+ObjectiveFunction <- function(weight_vector, adjacency_matrix, trace_matrix, probability_multiplex_matrix = NULL){
+# 	if (is.null(probability_multiplex_matrix)){
+# 		probability_multiplex_matrix = Reduce("+", mapply(function(network, weight){return(weight * network)}, adjacency_matrix, weight_vector, SIMPLIFY = FALSE))
+# 		probability_multiplex_matrix = CalculateProbabilityMatrix(probability_multiplex_matrix)
+# 	}
+	return(CalculateLogLikelihoodFromAdjacencyMatrix(adjacency_matrix, weight_vector, trace_matrix))
+}
+
+GradientFunction <- function(weight_vector, adjacency_matrix, trace_matrix, multiplex_matrix = NULL, probability_multiplex_matrix = NULL){
+# 	if (is.null(multiplex_matrix)){
+# 		multiplex_matrix = Reduce("+", mapply(function(network, weight){return(weight * network)}, adjacency_matrix, weight_vector, SIMPLIFY = FALSE))
+# 		multiplex_matrix = CalculateProbabilityMatrix(multiplex_matrix)
+# 	}
+# 	if (is.null(probability_multiplex_matrix)){
+# 		probability_multiplex_matrix = Reduce("+", mapply(function(network, weight){return(weight * network)}, adjacency_matrix, weight_vector, SIMPLIFY = FALSE))
+# 		probability_multiplex_matrix = CalculateProbabilityMatrix(probability_multiplex_matrix)
+# 	}
+	number_of_layers = length(adjacency_matrix)
+	multiplex_matrix = Reduce("+", mapply(function(network, weight){return(weight * network)}, adjacency_matrix, weight_vector, SIMPLIFY = FALSE))
+	list_row_normalizing_constant =  lapply(adjacency_matrix, function(network){
+						tmp_constant = apply(network, 1, sum)
+						tmp_constant[which(is.infinite(tmp_constant))] <- 0
+						return(tmp_constant)
+	})
+	multiplex_row_normalizing_constant = Reduce("+", mapply(function(network, weight){return(weight * network)}, list_row_normalizing_constant, weight_vector, SIMPLIFY = FALSE))
+
+	gradient_vector = c()
+	for (j in 1:number_of_layers){
+		gradient_vector_j = trace_matrix * (((multiplex_row_normalizing_constant * adjacency_matrix[[j]]) - (list_row_normalizing_constant[[j]] * multiplex_matrix))/(multiplex_row_normalizing_constant ^ 2))
+		gradient_vector = c(gradient_vector, sum(gradient_vector_j))
+	}
+
+	gradient_vector = gradient_vector / sqrt(sum(gradient_vector ^ 2))
+
+	return(gradient_vector)
+}
+
+GradientDescent <- function(weight_vector, adjacency_matrix, trace_matrix, ObjectiveFunction, GradientFunction, max_iteration = 100){
+	normal_vector = rep(1, length(adjacency_matrix))
+	normal_vector = normal_vector / sqrt(sum(sum(normal_vector ^ 2)))
+	weight_vector = weight_vector / sum(weight_vector)
+	print(weight_vector)
+	list_point = list(weight_vector)
+	adjacency_matrix = lapply(adjacency_matrix, function(network, trace_matrix){return(network * (trace_matrix > 0))}, trace_matrix)
+	multiplex_matrix = Reduce("+", mapply(function(network, weight){return(weight * network)}, adjacency_matrix, weight_vector, SIMPLIFY = FALSE))
+	probability_multiplex_matrix = CalculateProbabilityMatrix(multiplex_matrix)
+	list_objective = list(ObjectiveFunction(weight_vector, adjacency_matrix, trace_matrix, probability_multiplex_matrix))
+	i = 1
+	is_finished = i > max_iteration
+
+	while (!is_finished){
+		i = i + 1
+		print("====")
+		print(i)
+		gradient_vector = GradientFunction(weight_vector, adjacency_matrix, trace_matrix, multiplex_matrix, probability_multiplex_matrix)
+
+		##
+		gradient_vector = gradient_vector / sqrt(sum(gradient_vector ^ 2))
+		print(gradient_vector)
+		alpha = 0.1
+		##
+
+		old_weight_vector = weight_vector
+		weight_vector = weight_vector + alpha * gradient_vector
+		####
+		for (j in 1:length(weight_vector)){
+			if (weight_vector[[j]] < 0){
+				print("Negative")
+				print(j)
+				print("++")
+				print(weight_vector[[j]])
+				weight_vector[[j]] = old_weight_vector[[j]]
+			}
+		}
+		####
+		print(weight_vector)
+		weight_vector = weight_vector / sum(weight_vector)
+		print(weight_vector)
+		print(sum(weight_vector))
+		list_point[[i]] = weight_vector
+		list_objective[[i]] = ObjectiveFunction(weight_vector, adjacency_matrix, trace_matrix, multiplex_matrix)
+		print(list_objective[[i]])
+
+		multiplex_matrix = Reduce("+", mapply(function(network, weight){return(weight * network)}, adjacency_matrix, weight_vector, SIMPLIFY = FALSE))
+		probability_multiplex_matrix = CalculateProbabilityMatrix(multiplex_matrix)
+
+		## Finish Criteria
+		is_finished = ((FALSE) | (i > max_iteration))
+	}
+
+	result_dataframe = Reduce(rbind, mapply(function(sample, likelihood){
+		result = data.frame(t(sample))
+		result$value = likelihood
+		return(result)
+	  }, list_point, list_objective, SIMPLIFY = FALSE))
+
+	return(result_dataframe)
+}
+
+starting_point = runif(3)
+starting_point = starting_point/sum(starting_point)
+tmp = GradientDescent(starting_point, list_simulation_1$ER$network, list_simulation_1$ER$traces_matrix, ObjectiveFunction, GradientFunction)
+
+# list_simulation_1$parameter$network_weights = c(0.18, 0.37, 0.45)
+```
+```{r asd}
+[1] 6
+[1] -0.8172371 -0.1324038  0.5608857
+[1] 0.1505586 0.4434941 0.5023525
+[1] 1.096405
+[1] -62227.99
+[1] "===="
+[1] 7
+[1] -0.9224531 -0.1070493  0.3709726
+[1] 0.0583133 0.4327892 0.5394498
+[1] 1.030552
+[1] -67076.42
+
+```
+
+```{r coba}
+#number_of_layers = sample(1:10, 1)
+number_of_layers = 3
+weight_vector = runif(number_of_layers)
+weight_vector = weight_vector / sum(weight_vector)
+list_layer = list()
+for (i in 1:number_of_layers){
+	list_layer[[i]] = sample(0:1, 1972, replace = TRUE)
+}
+multiplex_layer = Reduce("+", mapply(function(layers, weights){layers * weights}, list_layer, weight_vector, SIMPLIFY = FALSE))
+samples = sample(1:1972, 10000000, replace = TRUE)
+sample_prob = matrix(0, 1972, 1)
+sample_prob[as.numeric(names(table(samples))), ] = table(samples)
+normalized_sample_prob = sample_prob / sum(sample_prob)
+rm(i)
+```
+
+```{r coba_optimize}
+df = data.frame()
+for (i in seq(0, 1, 1/20)){
+	for (j in seq(0, 1-i, 1/20)){
+		result = Reduce("+", mapply(function(layers, weights){layers * weights}, list_layer, c(i, j, 1 - i - j), SIMPLIFY = FALSE))
+		result = sum(result * sample_prob)
+		df = rbind(df, data.frame(w1 = i,
+					  w2 = j,
+					  w3 = 1 - i - j,
+					  likelihood = result))
+	}
+}
+df_excluded = df[which((df$w1 != 0) & (df$w2 != 0) & (df$w3 !=0)), ]
+```
+
+```{r GFP_Solution}
+CalculateFunctionValue <- function(adjacency_matrix_vector, degree_matrix_vector, traces_vector, weight_vector){
+	numerator = log(adjacency_matrix_vector %*% weight_vector)
+	numerator[which(is.infinite(numerator))] <- 0
+	denominator = log(degree_matrix_vector %*% weight_vector)
+	denominator[which(is.infinite(denominator))] <- 0
+	return(sum((traces_vector)*(numerator - denominator)))
+	#return(sum((traces_vector)*(adjacency_matrix_vector %*% weight_vector)/(degree_matrix_vector %*% weight_vector)))
+}
+
+UB <- function(adjacency_matrix_vector, degree_matrix_vector, traces_vector, H){
+	# Find Xi_l, Xi_u, eta_l, and eta_u (note: Here 0 <= x <= 1 and a_j is either 0 or 1. So, x_l and x_u are the points where these are lowest and largest)
+	x_l = H[, 1]
+	x_u = H[, 2]
+	Xi_l = adjacency_matrix_vector %*% x_l
+	Xi_u = adjacency_matrix_vector %*% x_u
+	eta_l = degree_matrix_vector %*% x_l
+	eta_u = degree_matrix_vector %*% x_u
+
+	tmp_log_Xi_l = log(Xi_l)
+	tmp_log_Xi_l[which(is.infinite(tmp_log_Xi_l))] = 0
+	tmp_log_Xi_u = log(Xi_u)
+	tmp_log_Xi_u[which(is.infinite(tmp_log_Xi_u))] = 0
+	tmp_log_eta_l = log(eta_l)
+	tmp_log_eta_l[which(is.infinite(tmp_log_eta_l))] = 0
+	tmp_log_eta_u = log(eta_u)
+	tmp_log_eta_u[which(is.infinite(tmp_log_eta_u))] = 0
+
+	# Find z_l and z_u. (note: Since, Xi_l, Xi_u, eta_l, and eta_u > 0, so z_l = ln(Xi_l/eta_u) and z_u = ln(Xi_u/eta_l))
+	z_l = tmp_log_Xi_l - tmp_log_eta_u
+	z_u = tmp_log_Xi_u - tmp_log_eta_l
+
+	# Find Y_l and Y_u and compute K, K_1, K_2
+	Y_l = sum(mapply(min, traces_vector * z_l, traces_vector * z_u))
+	Y_u = sum(mapply(max, traces_vector * z_l, traces_vector * z_u))
+	log_K = Y_u + log(1 - exp(Y_l - Y_u)) - log(Y_u - Y_l)
+	K_1 = as.numeric((tmp_log_Xi_u - tmp_log_Xi_l)/(Xi_u - Xi_l))
+	K_2 = as.numeric((tmp_log_eta_u - tmp_log_eta_l)/(eta_u - eta_l))
+
+	# Build RLP Objective Function (note: this is in form c^Tx, so the constants are thrown out. Also, only LF_1 is constructed since t_j > 0)
+	LF_1 = (traces_vector * ((K_1 * adjacency_matrix_vector) - (K_2 * degree_matrix_vector)))
+	LF_1 = apply(LF_1, c(2), sum)
+	A1 = diag(dim(adjacency_matrix_vector)[2])
+	b1 = x_u
+	A2 = diag(dim(adjacency_matrix_vector)[2])
+	b2 = x_l
+	A3 = matrix(rep(1, dim(adjacency_matrix_vector)[2]), 1, dim(adjacency_matrix_vector)[2])
+	b3 = c(1)
+
+	# Solve RLP with simplex
+	result_RLP = simplex(LF_1, A1, b1, A2, b2, A3, b3, maxi = TRUE)
+
+	# Calculate Actual Objective Function value
+	tmp_result = traces_vector * ((K_1 * (adjacency_matrix_vector %*% result_RLP$soln)) - 1 - (log(K_1)) - (K_2 * ((degree_matrix_vector %*% result_RLP$soln) - eta_l)) - (tmp_log_eta_l)) - Y_l
+	tmp_result = sum(tmp_result)
+	tmp_result_exp_log_trick = (Y_l - (log_K + log(tmp_result)))
+	tmp_result_exp_log_trick = exp(tmp_result_exp_log_trick)
+	result_value = log_K + log(tmp_result) + log(1 + tmp_result_exp_log_trick)
+
+# 	result_value = traces_vector * (-K - (K * log(K_1)) + (K * K_2 * eta_l) - (K * log(eta_l)) - (K * Y_l) + exp(Y_l))
+# 	result_value = sum(result_value) + LF_1 %*% result_RLP$soln
+
+	# Return result
+	list_result = list()
+	list_result$result = result_RLP
+	list_result$result_point = result_RLP$soln
+	list_result$result_value = result_value
+	list_result$x_l = x_l
+	list_result$x_u = x_u
+	list_result$Xi_l = Xi_l
+	list_result$Xi_u = Xi_u
+	list_result$eta_l = eta_l
+	list_result$eta_u = eta_u
+	list_result$z_l = z_l
+	list_result$z_u = z_u
+	list_result$Y_l = Y_l
+	list_result$Y_u = Y_u
+	list_result$log_K = log_K
+	list_result$K_1 = K_1
+	list_result$K_2 = K_2
+	list_result$LF_1 = LF_1
+
+	return(list_result)
+}
+
+BranchAndBound <- function(adjacency_matrix, traces, initial_bound_delta = 1e-10, epsilon = NULL, max_iteration = 1000){
+	# Initialize variables
+	H_0 = t(matrix(c(initial_bound_delta, 1-initial_bound_delta), 2, length(adjacency_matrix)))
+	if (is.null(epsilon)){
+		epsilon = 1e-5
+	}
+	epsilon = sum(traces) * dim(adjacency_matrix[[1]])[1] * log(1 - epsilon)
+
+	# Convert Adjacency Matrix list to (nxn) x number of layer matrix. Also Compute degree matrix converted to same dimension matrix
+	adjacency_matrix_vector = sapply(adjacency_matrix, as.numeric)
+	degree_matrix_vector = lapply(adjacency_matrix, function(x){t(apply(x, c(1), function(x){rep(sum(x), length(x))}))})
+	degree_matrix_vector = sapply(degree_matrix_vector, as.numeric)
+	traces_vector = as.numeric(traces)
+
+	# Subset data to traces data that exist
+	adjacency_matrix_vector = adjacency_matrix_vector[ which(traces_vector > 0), ]
+	degree_matrix_vector = degree_matrix_vector[which(traces_vector > 0), ]
+	traces_vector = traces_vector[ which(traces_vector > 0) ]
+	
+	## Calculate traces_vector X adjacency_matrix_vector and traces_vector X degree_matrix_vector
+	#multiplied_traces_adjacency = traces_vector * adjacency_matrix_vector
+	#multiplied_traces_degree = traces_vector * degree_matrix_vector
+
+	k = 1
+	list_Q = list(list(H_0))
+	list_results = list()
+	list_points = list()
+	list_UB = list()
+	list_LB = list()
+	list_x = list()
+
+	list_return = list()
+
+	# Find x_0 given H_0
+	list_results[[k]] = list(UB(adjacency_matrix_vector, degree_matrix_vector, traces_vector, H_0))
+	list_points[[k]] = list(list_results[[k]][[1]]$result_point)
+	list_UB[[k]] = list(list_results[[k]][[1]]$result_value)
+	list_x[[k]] = list_results[[k]][[1]]$result_point
+	list_LB[[k]] = CalculateFunctionValue(adjacency_matrix_vector, degree_matrix_vector, traces_vector, list_x[[k]])
+
+	if ((list_UB[[k]][[1]] - list_LB[[1]]) <= epsilon){
+		list_return$list_results = list_results
+		list_return$list_points = list_points
+		list_return$list_UB = list_UB
+		list_return$list_LB = list_LB
+		list_return$list_x = list_x
+		return(list_return)
+	}
+
+	H_k_index = which(unlist(list_UB[[k]]) == max(unlist(list_UB[[k]])))
+
+	while((k < max_iteration) & ((list_UB[[k]][[H_k_index]] - list_LB[[k]]) > epsilon)){
+		k = k + 1
+		print(k)
+		list_LB[[k]] = list_LB[[k - 1]]
+		list_x[[k]] = list_x[[k - 1]]
+
+		# Split H into H_1 and H_2
+		H_1 = list_Q[[k - 1]][[H_k_index]]
+		H_2 = list_Q[[k - 1]][[H_k_index]]
+		max_bound_width_index = apply(H_1, c(1), function(x){x[2] - x[1]})
+		max_bound_width_index = which(max_bound_width_index == max(max_bound_width_index))[1]
+		H_1[max_bound_width_index, ] = c(H_1[max_bound_width_index, 1],
+						 (1/2)*sum(H_1[max_bound_width_index, ]))
+		H_2[max_bound_width_index, ] = c((1/2)*sum(H_2[max_bound_width_index, ]),
+						 H_2[max_bound_width_index, 2])
+
+		# Delete H_k-1
+		list_Q[[k]] = list_Q[[k - 1]]
+		list_results[[k]] = list_results[[k - 1]]
+		list_points[[k]] = list_points[[k - 1]]
+		list_UB[[k]] = list_UB[[k - 1]]
+
+		list_Q[[k]][[H_k_index]] = NULL
+		list_results[[k]][[H_k_index]] = NULL
+		list_points[[k]][[H_k_index]] = NULL
+		list_UB[[k]][[H_k_index]] = NULL
+
+		# Compute and check linear constraint
+		H_1_LB = NULL
+		H_2_LB = NULL
+		if ((sum(H_1[, 1]) <= 1) & ( -sum(H_1[, 2]) <= -1)){
+			H_1_results = UB(adjacency_matrix_vector, degree_matrix_vector, traces_vector, H_1)
+			H_1_points = H_1_results$result_point
+			H_1_UB = H_1_results$result_value
+			H_1_LB = CalculateFunctionValue(adjacency_matrix_vector, degree_matrix_vector, traces_vector, H_1_points)
+		}
+		if ((sum(H_2[, 1]) <= 1) & (-sum(H_2[, 2]) <= -1)){
+			H_2_results = UB(adjacency_matrix_vector, degree_matrix_vector, traces_vector, H_2)
+			H_2_points = H_2_results$result_point
+			H_2_UB = H_2_results$result_value
+			H_2_LB = CalculateFunctionValue(adjacency_matrix_vector, degree_matrix_vector, traces_vector, H_2_points)
+		}
+		if (!is.null(H_1_LB)){
+			if (H_1_LB > list_LB[[k]]){
+				list_LB[[k]] = H_1_LB
+				list_x[[k]] = H_1_points
+			}
+		}
+		if (!is.null(H_2_LB)){
+			if (H_2_LB > list_LB[[k]]){
+				list_LB[[k]] = H_2_LB
+				list_x[[k]] = H_2_points
+			}
+		}
+
+		# Put H_t that are higher than list_LB[[k]]
+		if (!is.null(H_1_LB)){
+			if (H_1_UB > list_LB[[k]]){
+				list_Q[[k]][[length(list_Q[[k]]) + 1]] = H_1
+				list_results[[k]][[length(list_results[[k]]) + 1]] = H_1_results
+				list_points[[k]][[length(list_points[[k]]) + 1]] = H_1_points
+				list_UB[[k]][[length(list_UB[[k]]) + 1]] = H_1_UB
+			}
+		}
+		if (!is.null(H_2_LB)){
+			if (H_2_UB > list_LB[[k]]){
+				list_Q[[k]][[length(list_Q[[k]]) + 1]] = H_2
+				list_results[[k]][[length(list_results[[k]]) + 1]] = H_2_results
+				list_points[[k]][[length(list_points[[k]]) + 1]] = H_2_points
+				list_UB[[k]][[length(list_UB[[k]]) + 1]] = H_2_UB
+			}
+		}
+
+		# Remove un-improving region H in list_Q[[k]]
+		list_to_be_deleted = c()
+		for (i  in 1:length(list_Q[[k]])){
+			if (list_UB[[k]][[i]] <= list_LB[[k]]){
+				list_to_be_deleted = c(list_to_be_deleted, i)
+			}
+		}
+		list_Q[[k]][list_to_be_deleted] = NULL
+		list_results[[k]][list_to_be_deleted] = NULL
+		list_points[[k]][list_to_be_deleted] = NULL
+		list_UB[[k]][list_to_be_deleted] = NULL
+
+		# Find new H_k
+		H_k_index = which(unlist(list_UB[[k]]) == max(unlist(list_UB[[k]])))[1]
+	}
+
+	list_return$list_results = list_results
+	list_return$list_points = list_points
+	list_return$list_UB = list_UB
+	list_return$list_LB = list_LB
+	list_return$list_x = list_x
+	list_return$list_Q = list_Q
+	return(list_return)
+}
+```
+
+```{r coba_new_algorithm}
+test_result = BranchAndBound(list_simulation_1$ER$network, list_simulation_1$ER$traces_matrix, initial_bound_delta = 1e-5, epsilon = 1e-5, max_iteration = 500)
+```
+
+```{r brute_force}
+BruteForceAnyar <- function(adjacency_matrix, degree_matrix, traces, likelihood_function, number_of_points = 100){
+	result = mclapply(mc.cores = detectCores() - 1, seq(0, 1, 1/number_of_points), function(weight_1, likelihood_function, adjacency_matrix, traces, degree_matrix){
+		  print(weight_1)
+		  lapply(seq(0, 1 - weight_1, 1/number_of_points), function(weight_2, weight_1, likelihood_function, adjacency_matrix, traces, degree_matrix){
+				 list(c(weight_1, weight_2, 1 - (weight_1 + weight_2)), likelihood_function(adjacency_matrix, degree_matrix, traces, c(weight_1, weight_2, 1 - (weight_1 + weight_2))))
+			    }, weight_1, likelihood_function, adjacency_matrix, traces, degree_matrix)
+  }, likelihood_function, adjacency_matrix, traces, degree_matrix)
+	df = data.frame()
+	alpha = 1/number_of_points
+	for (i in 1:length(result)){
+		for (j in 1:length(result[[i]])){
+			df = rbind(df, data.frame(w1 = result[[i]][[j]][[1]][[1]],
+						  w2 = result[[i]][[j]][[1]][[2]],
+						  w3 = result[[i]][[j]][[1]][[3]],
+						  likelihood = result[[i]][[j]][[2]]))
+		}
+	}
+	return(df)
+}
+# Convert Adjacency Matrix list to (nxn) x number of layer matrix. Also Compute degree matrix converted to same dimension matrix
+adjacency_matrix_vector = sapply(list_simulation_1$ER$network, as.numeric)
+degree_matrix_vector = lapply(list_simulation_1$ER$network, function(x){t(apply(x, c(1), function(x){rep(sum(x), length(x))}))})
+degree_matrix_vector = sapply(degree_matrix_vector, as.numeric)
+traces_vector = as.numeric(list_simulation_1$ER$traces_matrix)
+
+# Subset data to traces data that exist
+adjacency_matrix_vector = adjacency_matrix_vector[ which(traces_vector > 0), ]
+degree_matrix_vector = degree_matrix_vector[which(traces_vector > 0), ]
+traces_vector = traces_vector[ which(traces_vector > 0) ]
+sweep_result = BruteForceAnyar(adjacency_matrix_vector, degree_matrix_vector, traces_vector, CalculateFunctionValue, 20)
+```
+
+```{r backup_code}
+CalculateFunctionValue <- function(adjacency_matrix_vector, degree_matrix_vector, traces_vector, weight_vector){
+	numerator = log(adjacency_matrix_vector %*% weight_vector)
+	numerator[which(is.infinite(numerator))] <- 0
+	denominator = log(degree_matrix_vector %*% weight_vector)
+	denominator[which(is.infinite(denominator))] <- 0
+	return(sum((traces_vector)*(numerator - denominator)))
+	#return(sum((traces_vector)*(adjacency_matrix_vector %*% weight_vector)/(degree_matrix_vector %*% weight_vector)))
+}
+
+UB <- function(adjacency_matrix_vector, degree_matrix_vector, traces_vector, H, initial_bound_delta = 1e-10){
+	# Find Xi_l, Xi_u, eta_l, and eta_u (note: Here 0 <= x <= 1 and a_j is either 0 or 1. So, x_l and x_u are the points where these are lowest and largest)
+	x_l = H[, 1]
+	x_u = H[, 2]
+	Xi_l = adjacency_matrix_vector %*% x_l
+	Xi_u = adjacency_matrix_vector %*% x_u
+	eta_l = degree_matrix_vector %*% x_l
+	eta_u = degree_matrix_vector %*% x_u
+
+	tmp_log_Xi_l = log(Xi_l)
+	tmp_log_Xi_l[which(is.infinite(tmp_log_Xi_l))] = 0
+	tmp_log_Xi_u = log(Xi_u)
+	tmp_log_Xi_u[which(is.infinite(tmp_log_Xi_u))] = 0
+	tmp_log_eta_l = log(eta_l)
+	tmp_log_eta_l[which(is.infinite(tmp_log_eta_l))] = 0
+	tmp_log_eta_u = log(eta_u)
+	tmp_log_eta_u[which(is.infinite(tmp_log_eta_u))] = 0
+
+	# Find z_l and z_u. (note: Since, Xi_l, Xi_u, eta_l, and eta_u > 0, so z_l = ln(Xi_l/eta_u) and z_u = ln(Xi_u/eta_l))
+	z_l = tmp_log_Xi_l - tmp_log_eta_u
+	z_u = tmp_log_Xi_u - tmp_log_eta_l
+
+	# Find Y_l and Y_u and compute K, K_1, K_2
+	Y_l = mapply(min, z_l, z_u)
+	Y_u = mapply(max, z_l, z_u)
+	K = (exp(Y_u) - exp(Y_l))/(Y_u - Y_l)
+	K_1 = as.numeric((tmp_log_Xi_u - tmp_log_Xi_l)/(Xi_u - Xi_l))
+	K_2 = as.numeric((tmp_log_eta_u - tmp_log_eta_l)/(eta_u - eta_l))
+
+	# Build RLP Objective Function (note: this is in form c^Tx, so the constants are thrown out. Also, only LF_1 is constructed since t_j > 0)
+	LF_1 = traces_vector * K * ((K_1 * adjacency_matrix_vector) - (K_2 * degree_matrix_vector))
+	LF_1 = apply(LF_1, c(2), sum)
+	A1 = diag(dim(adjacency_matrix_vector)[2])
+	b1 = rep(c(1 - initial_bound_delta), dim(adjacency_matrix_vector)[2])
+	A2 = diag(dim(adjacency_matrix_vector)[2])
+	b2 = rep(c(initial_bound_delta), dim(adjacency_matrix_vector)[2])
+	A3 = matrix(rep(1, dim(adjacency_matrix_vector)[2]), 1, dim(adjacency_matrix_vector)[2])
+	b3 = c(1)
+
+	# Solve RLP with simplex
+	result_RLP = simplex(LF_1, A1, b1, A2, b2, A3, b3, maxi = TRUE)
+
+	# Calculate Actual Objective Function value
+	result_value = traces_vector * (-K - (K * log(K_1)) + (K * K_2 * eta_l) - (K * log(eta_l)) - (K * Y_l) + exp(Y_l))
+	result_value = sum(result_value) + LF_1 %*% result_RLP$soln
+
+	# Return result
+	list_result = list()
+	list_result$result = result_RLP
+	list_result$result_point = result_RLP$soln
+	list_result$result_value = result_value
+	list_result$x_l = x_l
+	list_result$x_u = x_u
+	list_result$Xi_l = Xi_l
+	list_result$Xi_u = Xi_u
+	list_result$eta_l = eta_l
+	list_result$eta_u = eta_u
+	list_result$z_l = z_l
+	list_result$z_u = z_u
+	list_result$Y_l = Y_l
+	list_result$Y_u = Y_u
+	list_result$K = K
+	list_result$K_1 = K_1
+	list_result$K_2 = K_2
+	list_result$LF_1 = LF_1
+
+	return(list_result)
+}
+
+BranchAndBound <- function(adjacency_matrix, traces, initial_bound_delta = 1e-10, epsilon = NULL, minimum_w = 1e-10, max_iteration = 1000){
+	# Initialize variables
+	H_0 = t(matrix(c(initial_bound_delta, 1-initial_bound_delta), 2, length(adjacency_matrix)))
+	if (is.null(epsilon)){
+		epsilon = 1e-5
+	}
+
+	# Convert Adjacency Matrix list to (nxn) x number of layer matrix. Also Compute degree matrix converted to same dimension matrix
+	adjacency_matrix_vector = sapply(adjacency_matrix, as.numeric)
+	degree_matrix_vector = lapply(adjacency_matrix, function(x){t(apply(x, c(1), function(x){rep(sum(x), length(x))}))})
+	degree_matrix_vector = sapply(degree_matrix_vector, as.numeric)
+	traces_vector = as.numeric(traces)
+
+	# Subset data to traces data that exist
+	adjacency_matrix_vector = adjacency_matrix_vector[ which(traces_vector > 0), ]
+	degree_matrix_vector = degree_matrix_vector[which(traces_vector > 0), ]
+	traces_vector = traces_vector[ which(traces_vector > 0) ]
+	
+	## Calculate traces_vector X adjacency_matrix_vector and traces_vector X degree_matrix_vector
+	#multiplied_traces_adjacency = traces_vector * adjacency_matrix_vector
+	#multiplied_traces_degree = traces_vector * degree_matrix_vector
+
+	k = 1
+	list_F = list()
+	list_Q = list(list(H_0))
+	list_results = list()
+	list_points = list()
+	list_UB = list()
+	list_LB = list()
+	list_x = list()
+
+	list_return = list()
+
+	# Find x_0 given H_0
+	list_results[[k]] = list(UB(adjacency_matrix_vector, degree_matrix_vector, traces_vector, H_0, initial_bound_delta))
+	list_points[[k]] = list(list_results[[k]][[1]]$result_point)
+	list_UB[[k]] = list(list_results[[k]][[1]]$result_value)
+	list_x[[k]] = list_results[[k]][[1]]$result_point
+	list_LB[[k]] = CalculateFunctionValue(adjacency_matrix_vector, degree_matrix_vector, traces_vector, list_x[[k]])
+
+	if ((list_UB[[k]][[1]] - list_LB[[1]]) <= epsilon){
+		list_return$list_results = list_results
+		list_return$list_points = list_points
+		list_return$list_UB = list_UB
+		list_return$list_LB = list_LB
+		list_return$list_x = list_x
+		return(list_return)
+	}
+
+	H_k_index = which(unlist(list_UB[[k]]) == max(unlist(list_UB[[k]])))
+
+	while((k <= max_iteration) & ((list_UB[[k]][[H_k_index]] - list_LB[[k]]) > epsilon)){
+		k = k + 1
+		print(k)
+		list_LB[[k]] = list_LB[[k - 1]]
+		list_x[[k]] = list_x[[k - 1]]
+
+		# Split H into H_1 and H_2
+		H_1 = list_Q[[k - 1]][[H_k_index]]
+		H_2 = list_Q[[k - 1]][[H_k_index]]
+		max_bound_width_index = apply(H_1, c(1), function(x){x[2] - x[1]})
+		max_bound_width_index = which(max_bound_width_index == max(max_bound_width_index))
+		H_1[max_bound_width_index, ] = c(H_1[max_bound_width_index, 1],
+						 (1/2)*apply(H_1[max_bound_width_index, ], c(1), sum))
+		H_2[max_bound_width_index, ] = c((1/2)*apply(H_2[max_bound_width_index, ], c(1), sum),
+						 H_2[max_bound_width_index, 2])
+
+		# Delete H_k-1
+		list_Q[[k]] = list_Q[[k - 1]]
+		list_results[[k]] = list_results[[k - 1]]
+		list_points[[k]] = list_points[[k - 1]]
+		list_UB[[k]] = list_UB[[k - 1]]
+
+		list_Q[[k]][[H_k_index]] = NULL
+		list_results[[k]][[H_k_index]] = NULL
+		list_points[[k]][[H_k_index]] = NULL
+		list_UB[[k]][[H_k_index]] = NULL
+
+		# Compute and check linear constraint
+		H_1_LB = NULL
+		H_2_LB = NULL
+		if ((sum(H_1[, 1]) <= 1) & ( -sum(H_1[, 2]) <= -1)){
+			H_1_results = UB(adjacency_matrix_vector, degree_matrix_vector, traces_vector, H_1, initial_bound_delta)
+			H_1_points = H_1_results$result_point
+			H_1_UB = H_1_results$result_value
+			H_1_LB = CalculateFunctionValue(adjacency_matrix_vector, degree_matrix_vector, traces_vector, H_1_points)
+		}
+		if ((sum(H_2[, 1]) <= 1) & (-sum(H_2[, 2]) <= -1)){
+			H_2_results = UB(adjacency_matrix_vector, degree_matrix_vector, traces_vector, H_2, initial_bound_delta)
+			H_2_points = H_2_results$result_point
+			H_2_UB = H_2_results$result_value
+			H_2_LB = CalculateFunctionValue(adjacency_matrix_vector, degree_matrix_vector, traces_vector, H_2_points)
+		}
+		if (!is.null(H_1_LB)){
+			if (H_1_LB > list_LB[[k]]){
+				list_LB[[k]] = H_1_LB
+				list_x[[k]] = H_1_points
+			}
+		}
+		if (!is.null(H_2_LB)){
+			if (H_2_LB > list_LB[[k]]){
+				list_LB[[k]] = H_2_LB
+				list_x[[k]] = H_2_points
+			}
+		}
+
+		# Put H_t that are higher than list_LB[[k]]
+		if (!is.null(H_1_LB)){
+			if (H_1_UB > list_LB[[k]]){
+				list_Q[[k]][[length(list_Q[[k]]) + 1]] = H_1
+				list_results[[k]][[length(list_results[[k]]) + 1]] = H_1_results
+				list_points[[k]][[length(list_points[[k]]) + 1]] = H_1_points
+				list_UB[[k]][[length(list_UB[[k]]) + 1]] = H_1_UB
+			}
+		}
+		if (!is.null(H_2_LB)){
+			if (H_2_UB > list_LB[[k]]){
+				list_Q[[k]][[length(list_Q[[k]]) + 1]] = H_2
+				list_results[[k]][[length(list_results[[k]]) + 1]] = H_2_results
+				list_points[[k]][[length(list_points[[k]]) + 1]] = H_2_points
+				list_UB[[k]][[length(list_UB[[k]]) + 1]] = H_2_UB
+			}
+		}
+
+		# Remove un-improving region H in list_Q[[k]]
+		for (i  in 1:length(list_Q[[k]])){
+			if (list_UB[[k]][[i]] <= list_LB[[k]]){
+				list_Q[[k]][[i]] = NULL
+				list_results[[k]][[i]] = NULL
+				list_points[[k]][[i]] = NULL
+				list_UB[[k]][[i]] = NULL
+			}
+		}
+
+		# Find new H_k
+		H_k_index = which(unlist(list_UB[[k]]) == max(unlist(list_UB[[k]])))
+	}
+
+	list_return$list_results = list_results
+	list_return$list_points = list_points
+	list_return$list_UB = list_UB
+	list_return$list_LB = list_LB
+	list_return$list_x = list_x
+	return(list_return)
+}
+```

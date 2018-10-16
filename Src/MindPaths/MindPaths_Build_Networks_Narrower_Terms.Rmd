@@ -1,0 +1,97 @@
+---
+title: "MindPaths_Build_Networks_Narrower_Terms"
+author: "Mohammad Isyroqi Fathan"
+date: "October 6, 2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r library, include = FALSE}
+## Include/Use libraries
+library(dplyr)
+library(igraph)
+library(ggplot2)
+library(ggtern)
+library(truncnorm)
+library(wordnet)
+library(RSQLite)
+library(parallel)
+library(rPython)
+library(expm)
+library(entropy)
+```
+
+```{r define_variables}
+list_file = list()
+list_raw_data = list()
+list_norm = list()
+list_network = list()
+list_ig_network = list()
+```
+
+```{r load_RData}
+load('../../RData/NIPS/NIPS.RData')
+```
+
+```{r multicore_setup}
+no_of_cores = detectCores()
+```
+
+```{r open_db, include = FALSE}
+# Name of SQLite database file
+list_file$db_file = "../../Data/Processed/MindPaths/MindPaths_v1.db"
+
+# Connect to SQLite database file
+db_connection = dbConnect(RSQLite::SQLite(), dbname = list_file$db_file)
+print("Database opened\n")
+```
+
+```{r load_WordData_Narrower_Terms}
+# Load WordData Narrower Terms
+list_file$worddata_narrower_terms = '../../Data/Processed/WordData/Narrower_Terms.csv'
+list_raw_data$worddata_narrower_terms = read.csv(list_file$worddata_narrower_terms, header = FALSE)
+```
+
+```{r subset_WordData to network}
+# Subset WordData Narrower Terms to network
+list_raw_data$worddata_narrower_terms = list_raw_data$worddata_narrower_terms[match(rownames(list_network$nelson_unweighted), rownames(list_raw_data$nelson)), ]
+
+# Convert to string
+list_raw_data$worddata_narrower_terms = data.frame(sapply(list_raw_data$worddata_narrower_terms, as.character), stringsAsFactors = FALSE)
+```
+
+```{r build }
+# Create Synonyms network
+narrower_terms_norm_list = mclapply(mc.cores = floor(no_of_cores/2), 1:nrow(list_raw_data$worddata_narrower_terms), function(x, worddata, word_list){
+				      matched_index = match( worddata[x, ], word_list )
+				      # Whole result is NA
+				      if (sum(!is.na(matched_index)) == 0 ) {
+					      return(NULL)
+				      }
+				      return(matched_index[!is.na(matched_index)])
+						}, list_raw_data$worddata_narrower_terms, rownames(list_network$nelson_unweighted))
+list_network$narrower_terms = matrix(0, nrow(list_network$nelson_unweighted), nrow(list_network$nelson_unweighted))
+for (i in 1:length(narrower_terms_norm_list)) {
+	if (!is.null(narrower_terms_norm_list)) {
+		for (j in 1:length(narrower_terms_norm_list[[i]])) {
+			list_network$narrower_terms[ i, narrower_terms_norm_list[[i]][[j]] ] = list_network$narrower_terms[ i, narrower_terms_norm_list[[i]][[j]] ] + 1
+		}
+	}
+}
+
+# Create synonyms network iGraph
+list_ig_network$narrower_terms = graph_from_adjacency_matrix(list_network$narrower_terms)
+
+list_network$narrower_terms_unweighted = list_network$narrower_terms > 0
+list_ig_network$narrower_terms_unweighted = graph_from_adjacency_matrix(list_network$narrower_terms_unweighted)
+
+# Remove i and j variables
+rm(i, j, narrower_terms_norm_list)
+```
+
+```{r save_RData}
+save(list = ls(), file = '../../RData/NIPS/NIPS.RData')
+```

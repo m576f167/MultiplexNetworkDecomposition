@@ -1,0 +1,111 @@
+---
+title: "MindPaths_Build_Networks_Broader_Terms"
+author: "Mohammad Isyroqi Fathan"
+date: "October 6, 2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r library, include = FALSE}
+## Include/Use libraries
+library(dplyr)
+library(igraph)
+library(ggplot2)
+library(ggtern)
+library(truncnorm)
+library(wordnet)
+library(RSQLite)
+library(parallel)
+library(rPython)
+library(expm)
+library(entropy)
+```
+
+```{r define_variables}
+list_file = list()
+list_raw_data = list()
+list_norm = list()
+list_network = list()
+list_ig_network = list()
+```
+
+```{r load_RData}
+load('../../RData/NIPS/NIPS.RData')
+```
+
+```{r multicore_setup}
+no_of_cores = detectCores()
+```
+
+```{r open_db, include = FALSE}
+# Name of SQLite database file
+list_file$db_file = "../../Data/Processed/MindPaths/MindPaths_v1.db"
+
+# Connect to SQLite database file
+db_connection = dbConnect(RSQLite::SQLite(), dbname = list_file$db_file)
+print("Database opened\n")
+```
+
+```{r load_WordDataBroaderTerms}
+# Load WordData Broader Terms
+list_file$worddata_broader_terms = '../../Data/Processed/WordData/Broader_Terms.csv'
+list_raw_data$worddata_broader_terms = read.csv(list_file$worddata_broader_terms, header = FALSE)
+```
+
+```{r subset_WordData to network}
+# Subset WordData Broader Terms and Synonyms to network
+list_raw_data$worddata_broader_terms = list_raw_data$worddata_broader_terms[match(rownames(list_network$nelson_unweighted), rownames(list_raw_data$nelson)), ]
+
+# Convert to string
+list_raw_data$worddata_broader_terms = data.frame(sapply(list_raw_data$worddata_broader_terms, as.character), stringsAsFactors = FALSE)
+```
+
+```{r build }
+tmp = list()
+
+# Build the thematic/broader term network (note: the operation is broken down into several steps because matching words takes quite a long time)
+broader_terms_norm_list = mclapply(mc.cores = floor(no_of_cores/2), 1:nrow(list_raw_data$worddata_broader_terms), function(x, worddata){
+				return((mclapply(mc.cores = floor(no_of_cores/2), 1:nrow(worddata), function(y, worddata, x){
+						matched_index = match( worddata[x, ], worddata[y, ] )
+						# Whole result is NA
+						if (sum(!is.na(matched_index)) == 0) {
+							return(0)
+						}
+						count = sum(worddata[x, !is.na(matched_index)] != "")
+						return(count)
+					}, worddata, x)))
+						}, list_raw_data$worddata_broader_terms )
+
+broader_terms_norm_matrix = sapply(broader_terms_norm_list, function(x){return(x)}) 
+
+# Change matrix trace to 0
+list_network$broader_terms = broader_terms_norm_matrix
+for (i in 1:nrow(broader_terms_norm_matrix)) {
+	list_network$broader_terms[i, i] = 0
+}
+
+# Copy matrix
+tmp$matrix = matrix(0, nrow(list_network$broader_terms), ncol(list_network$broader_terms))
+for (i in 1:nrow(list_network$broader_terms)) {
+	for (j in 1:ncol(list_network$broader_terms)) {
+		tmp$matrix[i, j] = list_network$broader_terms[i, j][[1]]
+	}
+}
+list_network$broader_terms = tmp$matrix
+
+# Create broader_terms iGraph
+list_ig_network$broader_terms = graph_from_adjacency_matrix(list_network$broader_terms) 
+
+list_network$broader_terms_unweighted = list_network$broader_terms > 0
+list_ig_network$broader_terms_unweighted = graph_from_adjacency_matrix(list_network$broader_terms_unweighted)
+
+# Remove i and j variables
+rm(tmp, i, j, broader_terms_norm_list, broader_terms_norm_matrix)
+```
+
+```{r save_RData}
+save(list = ls(), file = '../../RData/NIPS/NIPS.RData')
+```

@@ -1,0 +1,408 @@
+---
+title: "MindPaths_Simulation"
+author: "Mohammad Isyroqi Fathan"
+date: "October 6, 2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r library, include = FALSE}
+## Include/Use libraries
+library(dplyr)
+library(reshape)
+library(igraph)
+library(ggplot2)
+library(ggtern)
+library(truncnorm)
+library(wordnet)
+library(RSQLite)
+library(parallel)
+library(rPython)
+library(expm)
+library(entropy)
+library(boot)
+```
+
+```{r load_data}
+load('../../../RData/NIPS/NIPS_Simulation.RData')
+```
+
+```{r Functions}
+CalculateAggregatedMultiplexAdjacencyMatrix <- function(networks, weights){
+  return(Reduce("+", mapply(function(network, weight){
+      return(weight * network)
+    }, networks, weights, SIMPLIFY = FALSE))
+  )
+}
+
+CalculateProbabilityMatrix <- function(adjacency_matrix_aggregate){
+  # Probability_i_j = Value_i_j/sum_per_row 
+  row_normalizing_constant = 1/apply(adjacency_matrix_aggregate, 1, sum)
+  row_normalizing_constant[which(is.infinite(row_normalizing_constant))] <- 0
+  return(adjacency_matrix_aggregate * row_normalizing_constant)
+}
+##============================================================================================================================
+### Trace Generation
+GenerateTrace <- function(probability_matrix, starting_node, path_length){
+  path_trace = list(starting_node)
+  for (i in 1:path_length){
+    # Traverse one node from current node
+    path_trace[[i+1]] = sample(1:dim(probability_matrix)[1], size = 1, prob = probability_matrix[path_trace[[i]], ])
+  }
+  return(path_trace)
+}
+
+## To Do: Fix and optimize how to get Transition Matrix (Problem is how to do pass by reference)
+CalculateTraceMatrix <- function(traces, number_of_nodes){
+  # # For every trace in traces, create trace_matrix. Then Reduce with "+".
+  # Reduce("+", lapply(traces, function(path_trace){
+  #   # Create trace_matrix per trace
+  #   trace_matrix = matrix(0, number_of_nodes, number_of_nodes)
+  #   for (i in 1:(length(path_trace) - 1)){
+  #     trace_matrix[path_trace[[i]], path_trace[[i + 1]]] = trace_matrix[path_trace[[i]], path_trace[[i + 1]]] + 1
+  #   }
+  #   return(trace_matrix)
+  # }))
+  trace_matrix = matrix(0, number_of_nodes, number_of_nodes)
+  for (i in 1:length(traces)){
+    for(j in 1:(length(traces[[i]]) - 1)){
+      trace_matrix[traces[[i]][[j]], traces[[i]][[j + 1]]] = trace_matrix[traces[[i]][[j]], traces[[i]][[j + 1]]] + 1
+    }
+  }
+  return(trace_matrix)
+}
+
+GenerateTraceForRandomNNode <- function(probability_matrix, path_length, number_of_nodes, probability_starting_node = NULL){
+  return(lapply(1:number_of_nodes, function(i, probability_matrix, path_length, probability_starting_node){
+            # Initialize starting_node to NULL
+            starting_node = NULL
+            if (is.null(probability_starting_node)) {
+              # Sampling starting_node from uniform distribution
+              starting_node = sample(1:dim(probability_matrix)[1], 1)
+            }
+            else {
+              # Sampling starting_node from probability_starting_node distribution
+              starting_node = sample(1:dim(probability_matrix)[1], 1, prob = probability_starting_node)
+            }
+            GenerateTrace(probability_matrix, starting_node, path_length)
+         }, probability_matrix, path_length, probability_starting_node))
+}
+##============================================================================================================================
+```
+
+
+```{r list_simulation}
+list_simulation_1 = list()
+```
+
+```{r simulation_1}
+# Simulate synthetic data unweighted
+# Define Variables
+list_simulation_1$parameter = list()
+list_simulation_1$parameter$network_density_probability = c(0.01, 0.0008, 0.01)
+list_simulation_1$parameter$n = 1972
+# list_simulation_1$parameter$network_weights = c(0.2, 0.3, 0.5)
+list_simulation_1$parameter$network_weights = c(0.63, 0.11, 0.26)
+#list_simulation_1$parameter$network_weights = c(0.18, 0.37, 0.45)
+list_simulation_1$parameter$number_of_traces = 1000
+
+# ER Network
+# Generate Network
+list_simulation_1$ER = list()
+list_simulation_1$ER$network = lapply(list_simulation_1$parameter$network_density_probability, erdos.renyi.game, n = list_simulation_1$parameter$n, type = c("gnp", "gnm"), directed = TRUE, loops = FALSE)
+list_simulation_1$ER$network = lapply(list_simulation_1$ER$network, as_adjacency_matrix, sparse = FALSE)
+
+# Generate Multiplex Network
+list_simulation_1$ER$Aggregate = CalculateAggregatedMultiplexAdjacencyMatrix(list_simulation_1$ER$network, list_simulation_1$parameter$network_weights)
+
+# Calculate Probability Matrix
+list_simulation_1$ER$Probability = CalculateProbabilityMatrix(list_simulation_1$ER$Aggregate)
+
+# Generate Random Traces
+list_simulation_1$ER$traces = GenerateTraceForRandomNNode(list_simulation_1$ER$Probability, 25, list_simulation_1$parameter$number_of_traces)
+
+# Generate Trace Matrix
+list_simulation_1$ER$traces_matrix = CalculateTraceMatrix(list_simulation_1$ER$traces, list_simulation_1$parameter$n)
+
+# Regular Network
+# Generate Network
+list_simulation_1$Regular = list()
+list_simulation_1$Regular$network = lapply(list_simulation_1$parameter$network_density_probability * list_simulation_1$parameter$n, sample_k_regular, no.of.nodes = list_simulation_1$parameter$n, directed = TRUE, multiple = FALSE)
+list_simulation_1$Regular$network = lapply(list_simulation_1$Regular$network, as_adjacency_matrix, sparse = FALSE)
+
+# Generate Multiplex Network
+list_simulation_1$Regular$Aggregate = CalculateAggregatedMultiplexAdjacencyMatrix(list_simulation_1$Regular$network, list_simulation_1$parameter$network_weights)
+
+# Calculate Probability Matrix
+list_simulation_1$Regular$Probability = CalculateProbabilityMatrix(list_simulation_1$Regular$Aggregate)
+
+# Generate Random Traces
+list_simulation_1$Regular$traces = GenerateTraceForRandomNNode(list_simulation_1$Regular$Probability, 25, list_simulation_1$parameter$number_of_traces)
+
+# Generate Trace Matrix
+list_simulation_1$Regular$traces_matrix = CalculateTraceMatrix(list_simulation_1$Regular$traces, list_simulation_1$parameter$n)
+```
+
+```{r generate_path}
+list_trace_path = list()
+list_state_path = list()
+for (index in 1:1000){
+	trace_length = sample(5:25, 1)
+	trace_path = c(2)
+	state_path = sample(1:3, 1, prob = init_prob)
+
+	for (i in 1:trace_length){
+		state_path = c(state_path, sample(1:3, 1, prob = layer_transition[state_path[length(state_path)],]))
+		trace_path = c(trace_path, sample(1:3, 1, prob = list_network[[state_path[length(state_path)]]][trace_path[length(trace_path)], ]))
+	}
+	list_trace_path[[index]] = trace_path
+	list_state_path[[index]] = state_path
+}
+```
+
+```{r summarize}
+state_matrix = matrix(0, 3, 3)
+for (i in 1:(length(state_path) - 1)){
+	state_matrix[state_path[i], state_path[i + 1]] = state_matrix[state_path[i], state_path[i + 1]] + 1
+}
+```
+
+```{r t}
+trace_path_converted = c()
+for (i in 1:(length(trace_path) - 1)){
+	trace_path_converted = c(trace_path_converted, 3 * (trace_path[i] - 1) + trace_path[i + 1])
+}
+tmp_emission = matrix(0, 3, 9)
+for (i in 1:(length(trace_path) - 1)){
+	tmp_emission[1, trace_path_converted[i]] = list_network[[1]][trace_path[i], trace_path[i + 1]]
+	tmp_emission[2, trace_path_converted[i]] = list_network[[2]][trace_path[i], trace_path[i + 1]]
+	tmp_emission[3, trace_path_converted[i]] = list_network[[3]][trace_path[i], trace_path[i + 1]]
+}
+```
+
+```{r HiddenMarkovModel}
+ComputeForward <- function(initial_layer_probability, layer_transition_matrix, adjacency_matrix, trace_path, rescale = FALSE){
+	forward_matrix = matrix(1, length(initial_layer_probability), (length(trace_path) - 1))
+	forward_matrix[, 1] = initial_layer_probability * sapply(adjacency_matrix, function(x, a, b){x[a, b]}, trace_path[[1]], trace_path[[2]])
+	rescale_constants = NULL
+
+	if (rescale){
+		rescale_constants = 1/sum(forward_matrix[, 1])
+		forward_matrix[, 1] = forward_matrix[, 1]/sum(forward_matrix[, 1])
+	}
+
+	for (j in 2:(length(trace_path) - 1)){
+		for (i in 1:length(initial_layer_probability)){
+			forward_matrix[i, j] = sum(forward_matrix[, j - 1] * layer_transition_matrix[, i]) * adjacency_matrix[[i]][trace_path[[j]], trace_path[[j + 1]]]
+		}
+
+		if (rescale){
+			rescale_constants = c(rescale_constants, 1/sum(forward_matrix[, j]))
+			forward_matrix[, j] = forward_matrix[, j]/sum(forward_matrix[, j])
+		}
+	}
+
+	return(list(forward_matrix = forward_matrix, rescale_constants = rescale_constants))
+}
+
+ComputeBackward <- function(initial_layer_probability, layer_transition_matrix, adjacency_matrix, trace_path, rescale = FALSE){
+	backward_matrix = matrix(1, length(initial_layer_probability), (length(trace_path) - 1))
+	rescale_constants = NULL
+	for (j in (length(trace_path) - 1):2){
+		for (i in 1:length(initial_layer_probability)){
+			backward_matrix[i, j - 1] = sum( backward_matrix[, j] * layer_transition_matrix[i, ] * sapply(adjacency_matrix, function(x, a, b){x[a, b]}, trace_path[[j]], trace_path[[j + 1]]) )
+		}
+
+		if (rescale){
+			rescale_constants = c(1/sum(backward_matrix[, j]), rescale_constants)
+			backward_matrix[, j] = backward_matrix[, j]/sum(backward_matrix[, j])
+		}
+	}
+
+	return(list(backward_matrix = backward_matrix, rescale_constants = rescale_constants))
+}
+
+ComputeGamma <- function(layer, time_step_t, forward_matrix, backward_matrix){
+	tmp_vec = forward_matrix[, time_step_t] * backward_matrix[, time_step_t]
+	return(tmp_vec[layer]/sum(tmp_vec))
+}
+
+ComputeXi <- function(layer_i, layer_j, time_step_t, forward_matrix, backward_matrix, initial_layer_probability, layer_transition_matrix, adjacency_matrix, trace_path){
+	tmp_numerator = forward_matrix[layer_i, time_step_t] * layer_transition_matrix[layer_i, layer_j] * adjacency_matrix[[layer_j]][trace_path[[time_step_t + 1]], trace_path[[time_step_t + 2]]] * backward_matrix[layer_j, time_step_t + 1]
+	probability_of_data = 0
+	for (i in 1:length(initial_layer_probability)){
+		for (j in 1:length(initial_layer_probability)){
+			tmp = forward_matrix[i, time_step_t] * layer_transition_matrix[i, j] * adjacency_matrix[[j]][trace_path[[time_step_t + 1]], trace_path[[time_step_t + 2]]] * backward_matrix[j, time_step_t + 1]
+			probability_of_data = probability_of_data + tmp
+		}
+	}
+	return(tmp_numerator/probability_of_data)
+}
+
+Viterbi <- function(initial_layer_probability = NULL, layer_transition_matrix = NULL, adjacency_matrix, trace_path, max_iteration = 1e5, rescale = FALSE){
+	if (is.null(initial_layer_probability)){
+		initial_layer_probability = rep(1/length(adjacency_matrix), length(adjacency_matrix))
+	}
+
+	if (is.null(layer_transition_matrix)){
+		layer_transition_matrix = matrix(1/length(adjacency_matrix), length(adjacency_matrix), length(adjacency_matrix))
+	}
+
+	if (dim(layer_transition_matrix)[1] != dim(layer_transition_matrix)[2]){
+		return(NULL)
+	}
+
+	# Forward matrix and Backtrack matrix
+	forward_matrix = matrix(1, length(initial_layer_probability), (length(trace_path) - 1))
+	backtrack_matrix = matrix(0, length(initial_layer_probability), (length(trace_path) - 1))
+
+	# Initialization
+	if (rescale){
+		forward_matrix[, 1] = log(initial_layer_probability) + log(sapply(adjacency_matrix, function(x, a, b){x[a, b]}, trace_path[[1]], trace_path[[2]]))
+	}
+	else{
+		forward_matrix[, 1] = initial_layer_probability * sapply(adjacency_matrix, function(x, a, b){x[a, b]}, trace_path[[1]], trace_path[[2]])
+	}
+
+	# Recursion
+	for (j in 2:(length(trace_path) - 1)){
+		for (i in 1:length(initial_layer_probability)){
+			if (rescale){
+				tmp_vec = forward_matrix[, j - 1] + log(layer_transition_matrix[, i])
+				forward_matrix[i, j] = max(tmp_vec) + log(adjacency_matrix[[i]][trace_path[[j]], trace_path[[j + 1]]])
+			}
+			else{
+				tmp_vec = forward_matrix[, j - 1] * layer_transition_matrix[, i]
+				forward_matrix[i, j] = max(tmp_vec) * adjacency_matrix[[i]][trace_path[[j]], trace_path[[j + 1]]]
+			}
+			backtrack_matrix[i, j] = which(max(tmp_vec) == tmp_vec)[1]
+		}
+	}
+
+	max_probability = max(forward_matrix[, (length(trace_path) - 1)])
+	# Backtrack
+	state_sequence = c(which(max(forward_matrix[, (length(trace_path) - 1)]) == forward_matrix[, (length(trace_path) - 1)]))
+	for (j in (length(trace_path) - 1):1){
+		state_sequence = c(backtrack_matrix[state_sequence[1], j], state_sequence)
+	}
+
+	return(list(probability_of_data = max_probability, state_sequence = state_sequence, forward_matrix = forward_matrix, backtrack_matrix = backtrack_matrix))
+}
+
+HiddenMarkovModelBaumWelch <- function(initial_layer_probability = NULL, layer_transition_matrix = NULL, adjacency_matrix, list_trace_path, max_iteration = 1e5, rescale = FALSE){
+	if (is.null(initial_layer_probability)){
+		initial_layer_probability = rep(1/length(adjacency_matrix), length(adjacency_matrix))
+	}
+
+	if (is.null(layer_transition_matrix)){
+		layer_transition_matrix = matrix(1/length(adjacency_matrix), length(adjacency_matrix), length(adjacency_matrix))
+	}
+
+	if (dim(layer_transition_matrix)[1] != dim(layer_transition_matrix)[2]){
+		return(NULL)
+	}
+
+	k = 1
+	original_initial_layer_probability = initial_layer_probability
+	original_layer_transition_matrix = layer_transition_matrix
+	while ((TRUE) && (k <= max_iteration)){
+		print(k)
+		print(initial_layer_probability)
+		print(layer_transition_matrix)
+		list_result_forward = list()
+		list_result_backward = list()
+		list_forward_matrix = list()
+		list_backward_matrix = list()
+		
+		# Compute Forward and Backward Matrix
+		for (index_trace_path in 1:length(list_trace_path)){
+			trace_path = list_trace_path[[index_trace_path]]
+			list_result_forward[[index_trace_path]] = ComputeForward(initial_layer_probability, layer_transition_matrix, adjacency_matrix, trace_path, rescale)
+			list_result_backward[[index_trace_path]] = ComputeBackward(initial_layer_probability, layer_transition_matrix, adjacency_matrix, trace_path, rescale)
+			list_forward_matrix[[index_trace_path]] = list_result_forward[[index_trace_path]]$forward_matrix
+			list_backward_matrix[[index_trace_path]] = list_result_backward[[index_trace_path]]$backward_matrix
+		}
+		old_initial_layer_probability = initial_layer_probability
+		old_layer_transition_matrix = layer_transition_matrix
+		print(sum(log(sapply(list_result_forward, function(x){sum(x$forward_matrix[, dim(x$forward_matrix)[2]])}))))
+
+		# Compute initial_layer_probability
+		tmp_initial_layer_probability = 0
+		for (index_trace_path in 1:length(list_trace_path)){
+			tmp_initial_layer_probability = tmp_initial_layer_probability + sapply(1:length(initial_layer_probability), ComputeGamma, 1, list_forward_matrix[[index_trace_path]], list_backward_matrix[[index_trace_path]])
+		}
+		initial_layer_probability = tmp_initial_layer_probability/sum(tmp_initial_layer_probability)
+
+		# Compute layer_transition_matrix
+		for (i in 1:length(initial_layer_probability)){
+			sum_gamma = 0
+			for (index_trace_path in 1:length(list_trace_path)){
+				trace_path = list_trace_path[[index_trace_path]]
+				forward_matrix = list_forward_matrix[[index_trace_path]]
+				backward_matrix = list_backward_matrix[[index_trace_path]]
+				for (time_step in 1:(length(trace_path) - 2)){
+					sum_gamma = sum_gamma + ComputeGamma(i, time_step, forward_matrix, backward_matrix)
+				}
+			}
+			for (j in 1:length(initial_layer_probability)){
+				sum_xi = 0
+				for (index_trace_path in 1:length(list_trace_path)){
+					trace_path = list_trace_path[[index_trace_path]]
+					forward_matrix = list_forward_matrix[[index_trace_path]]
+					backward_matrix = list_backward_matrix[[index_trace_path]]
+					for (time_step in 1:(length(trace_path) - 2)){
+						sum_xi = sum_xi + ComputeXi(i, j, time_step, forward_matrix, backward_matrix, old_initial_layer_probability, old_layer_transition_matrix, adjacency_matrix, trace_path)
+					}
+				}
+				layer_transition_matrix[i, j] = sum_xi/sum_gamma
+			}
+		}
+
+# 		# Compute layer_transition_matrix
+# 		for (i in 1:length(initial_layer_probability)){
+# 			sum_gamma = 0
+# 			for (time_step in 1:(length(trace_path) - 2)){
+# 				sum_gamma = sum_gamma + ComputeGamma(i, time_step, forward_matrix, backward_matrix)
+# 			}
+# 			for (j in 1:length(initial_layer_probability)){
+# 				sum_xi = 0
+# 				
+# 				for (time_step in 1:(length(trace_path) - 2)){
+# 					sum_xi = sum_xi + ComputeXi(i, j, time_step, forward_matrix, backward_matrix, old_initial_layer_probability, old_layer_transition_matrix, adjacency_matrix, trace_path)
+# 				}
+# 				layer_transition_matrix[i, j] = sum_xi/sum_gamma
+# 			}
+# 		}
+
+		# Compute b_j?
+		k = k + 1
+	}
+
+	return(list(initial_layer_probability = initial_layer_probability,
+		    layer_transition_matrix = layer_transition_matrix))
+}
+```
+
+```{r test}
+test_result = GradientDescent(c(0.3, 0.3, 0.4), list_simulation_1$ER$network, list_simulation_1$ER$traces_matrix, ObjectiveFunction, GradientFunction, epsilon = 1e-4)
+```
+
+```{r MindPaths_Simulation_Data}
+starting_point = runif(3)
+starting_point = starting_point / sum(starting_point)
+list_GradientDescent_result = list()
+list_GradientDescent_result[[1]] = GradientDescent(starting_point, list_simulation_1$ER$network, list_simulation_1$ER$traces_matrix, ObjectiveFunction, GradientFunction, epsilon = 1e-4)
+list_GradientDescent_result[[2]] = GradientDescent(starting_point, list_simulation_2$ER$network, list_simulation_2$ER$traces_matrix, ObjectiveFunction, GradientFunction, epsilon = 1e-4)
+starting_point = runif(4)
+starting_point = starting_point / sum(starting_point)
+list_GradientDescent_result[[3]] = GradientDescent(starting_point, list_simulation_3$network, list_simulation_3$traces_matrix, ObjectiveFunction, GradientFunction, epsilon = 1e-4)
+list_GradientDescent_result[[4]] = GradientDescent(starting_point, list_simulation_4$network, list_simulation_4$traces_matrix, ObjectiveFunction, GradientFunction, epsilon = 1e-4)
+list_GradientDescent_result[[5]] = GradientDescent(starting_point, list_simulation_5$network, list_simulation_5$traces_matrix, ObjectiveFunction, GradientFunction, epsilon = 1e-4)
+```
+
+```{r save_data}
+save(list = ls(), file = 'RData/GradientDescent.RData')
+```

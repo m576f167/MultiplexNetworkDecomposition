@@ -1,0 +1,142 @@
+---
+title: "MindPaths_Build_Networks_WordNet"
+author: "Mohammad Isyroqi Fathan"
+date: "October 6, 2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r library, include = FALSE}
+## Include/Use libraries
+library(dplyr)
+library(igraph)
+library(ggplot2)
+library(ggtern)
+library(truncnorm)
+library(wordnet)
+library(RSQLite)
+library(parallel)
+library(rPython)
+library(expm)
+library(entropy)
+```
+
+```{r define_variables}
+list_file = list()
+list_raw_data = list()
+list_norm = list()
+list_network = list()
+list_ig_network = list()
+```
+
+```{r load_RData}
+load('../../RData/NIPS/NIPS.RData')
+```
+
+```{r multicore_setup}
+no_of_cores = detectCores()
+```
+
+```{r open_db, include = FALSE}
+# Name of SQLite database file
+list_file$db_file = "../../Data/Processed/MindPaths/MindPaths_v1.db"
+
+# Connect to SQLite database file
+db_connection = dbConnect(RSQLite::SQLite(), dbname = list_file$db_file)
+print("Database opened\n")
+```
+
+```{r load_WordData_Narrower_Terms}
+# Load WordData files
+list_file$wn_word_list = '../../Data/Processed/Pajek/wordNet/word_list.csv'
+list_file$wn_hypernym = '../../Data/Processed/Pajek/wordNet/hypernym.csv'
+list_file$wn_entailment = '../../Data/Processed/Pajek/wordNet/entailment.csv'
+list_file$wn_similar = '../../Data/Processed/Pajek/wordNet/similar.csv'
+list_file$wn_member_meronym = '../../Data/Processed/Pajek/wordNet/member_meronym.csv'
+list_file$wn_substance_meronym = '../../Data/Processed/Pajek/wordNet/substance_meronym.csv'
+list_file$wn_part_meronym = '../../Data/Processed/Pajek/wordNet/part_meronym.csv'
+list_file$wn_cause = '../../Data/Processed/Pajek/wordNet/cause.csv'
+list_file$wn_grouped_verb = '../../Data/Processed/Pajek/wordNet/grouped_verb.csv'
+list_file$wn_attribute = '../../Data/Processed/Pajek/wordNet/attribute.csv'
+
+list_raw_data$wn_word_list = read.csv(list_file$wn_word_list, header = FALSE)
+list_raw_data$wn_hypernym = read.csv(list_file$wn_hypernym, header = FALSE)
+list_raw_data$wn_entailment = read.csv(list_file$wn_entailment, header = FALSE)
+list_raw_data$wn_similar = read.csv(list_file$wn_similar, header = FALSE)
+list_raw_data$wn_member_meronym = read.csv(list_file$wn_member_meronym, header = FALSE)
+list_raw_data$wn_substance_meronym = read.csv(list_file$wn_substance_meronym, header = FALSE)
+list_raw_data$wn_part_meronym = read.csv(list_file$wn_part_meronym, header = FALSE)
+list_raw_data$wn_cause = read.csv(list_file$wn_cause, header = FALSE)
+list_raw_data$wn_grouped_verb = read.csv(list_file$wn_grouped_verb, header = FALSE)
+list_raw_data$wn_attribute = read.csv(list_file$wn_attribute, header = FALSE)
+
+colnames(list_raw_data$wn_word_list) = c("WORD_ID", "WORD")
+list_raw_data$wn_word_list$WORD = sapply(list_raw_data$wn_word_list$WORD, as.character)
+list_raw_data$wn_word_list$WORD = gsub("#", "", list_raw_data$wn_word_list$WORD)
+```
+
+```{r subset_WordData to network}
+# Subset WordNet WordList to network
+list_raw_data$wn_word_list = list_raw_data$wn_word_list[which(list_raw_data$wn_word_list$WORD %in% rownames(list_network$nelson_unweighted)), ]
+```
+
+```{r function}
+BuildWordNetNetwork <- function(wordlist, edge_data, wordlist_match){
+	tmp_matrix = matrix(0, length(wordlist_match), length(wordlist_match))
+	colnames(tmp_matrix) = wordlist_match
+	rownames(tmp_matrix) = wordlist_match
+	for (i in 1:nrow(edge_data)) {
+		for (j in 2:ncol(edge_data[i, ])) {
+			if (is.finite(edge_data[i, j])) {
+				word_start = which(rownames(tmp_matrix) == (wordlist[which(wordlist$WORD_ID == edge_data[i, 1]), ]$WORD))
+				word_end = which(colnames(tmp_matrix) == (wordlist[which(wordlist$WORD_ID == edge_data[i, j]), ]$WORD))
+				tmp_matrix[word_start, word_end] = tmp_matrix[word_start, word_end] + 1
+			}
+		}
+	}
+	return(tmp_matrix)
+}
+```
+
+```{r build }
+tmp = list()
+tmp$edge_data = list( list_raw_data$wn_hypernym,
+			list_raw_data$wn_entailment,
+			list_raw_data$wn_similar,
+			list_raw_data$wn_member_meronym,
+			list_raw_data$wn_substance_meronym,
+			list_raw_data$wn_part_meronym,
+			list_raw_data$wn_cause,
+			list_raw_data$wn_grouped_verb,
+			list_raw_data$wn_attribute)
+tmp$network = mclapply(mc.cores = no_of_cores, tmp$edge_data, BuildWordNetNetwork, wordlist = list_raw_data$wn_word_list, wordlist_match = rownames(list_network$nelson_unweighted))
+
+list_network$wn_hypernym = tmp$network[[1]]
+list_network$wn_entailment = tmp$network[[2]]
+list_network$wn_similar = tmp$network[[3]]
+list_network$wn_member_meronym = tmp$network[[4]]
+list_network$wn_substance_meronym = tmp$network[[5]]
+list_network$wn_part_meronym = tmp$network[[6]]
+list_network$wn_cause = tmp$network[[7]]
+list_network$wn_grouped_verb = tmp$network[[8]]
+list_network$wn_attribute = tmp$network[[9]]
+
+list_ig_network$wn_hypernym = graph_from_adjacency_matrix(list_network$wn_hypernym)
+list_ig_network$wn_entailment = graph_from_adjacency_matrix(list_network$wn_entailment)
+list_ig_network$wn_similar = graph_from_adjacency_matrix(list_network$wn_similar)
+list_ig_network$wn_member_meronym = graph_from_adjacency_matrix(list_network$wn_member_meronym)
+list_ig_network$wn_substance_meronym = graph_from_adjacency_matrix(list_network$wn_substance_meronym)
+list_ig_network$wn_part_meronym = graph_from_adjacency_matrix(list_network$wn_part_meronym)
+list_ig_network$wn_cause = graph_from_adjacency_matrix(list_network$wn_cause)
+list_ig_network$wn_grouped_verb = graph_from_adjacency_matrix(list_network$wn_grouped_verb)
+list_ig_network$wn_attribute = graph_from_adjacency_matrix(list_network$wn_attribute)
+
+rm(tmp)
+```
+
+```{r save_RData}
+save(list = ls(), file = '../../RData/NIPS/NIPS.RData')
+```

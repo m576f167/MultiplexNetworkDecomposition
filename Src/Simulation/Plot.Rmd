@@ -1,0 +1,177 @@
+---
+title: "MindPaths_Simulation_Modified"
+author: "Mohammad Isyroqi Fathan"
+date: "October 6, 2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r library, include = FALSE}
+## Include/Use libraries
+library(dplyr)
+library(reshape)
+library(igraph)
+library(ggplot2)
+library(ggtern)
+library(truncnorm)
+library(wordnet)
+library(RSQLite)
+library(parallel)
+library(rPython)
+library(expm)
+library(entropy)
+library(sna)
+```
+
+```{r plot_graphs}
+# ##============================================================================================================================
+# ### Graph Plot
+tmp = list()
+tmp$MCMC = list()
+tmp$MCMC$list_simulation_1_ER = list_GradientDescent_result[[1]]
+#tmp$MCMC$list_simulation_1_Regular = list_simulation_1$Regular$MCMC
+tmp$MCMC$list_simulation_2_ER = list_simulation_2$ER$MCMC[[1]]
+#tmp$MCMC$list_simulation_2_Regular = list_simulation_2$Regular$MCMC
+tmp$MCMC$list_simulation_3 = list_simulation_3$MCMC[[1]]
+tmp$MCMC$list_simulation_4 = list_simulation_4$MCMC[[1]]
+tmp$MCMC$list_simulation_5 = list_simulation_5$MCMC[[1]]
+tmp$simulation_names = list("Unweigthed_ER",
+#			    "Unweighted_Regular",
+			    "Distance_Weighted_ER",
+#			    "Distance_Weighted_Regular")#,
+ 			    "Unweighted_MindPaths",
+ 			    "Distance_Weighted_MindPaths",
+ 			    "Distance_Weighted_Replaced_MindPaths")
+##============================================================================================================================
+lapply(1:length(tmp$MCMC), function(index, list_MCMC, list_names){
+		jpeg(paste('Plot/NIPS/', list_names[[index]], '_histogram_learning_curve', '.jpg', sep = ''))
+		df = list_MCMC[[index]]
+		df$iteration = 1:nrow(df)
+		p1 <- ggplot(data = df, aes(x = X1)) + geom_histogram() + geom_density(fill = "red", alpha = 0.2) + labs(x = paste("Weight 1 =", format(mean(df[-1:-100, c("X1")]), digits = 2), "(mean)"), title = "Distribution of Weight 1 Sample")
+		p2 <- ggplot(data = df, aes(x = X2)) + geom_histogram() + geom_density(fill = "green", alpha = 0.2) + labs(x = paste("Weight 2 =", format(mean(df[-1:-100, c("X2")]), digits = 2), "(mean)"), title = "Distribution of Weight 2 Sample")
+		p3 <- ggplot(data = df, aes(x = X3)) + geom_histogram() + geom_density(fill = "blue", alpha = 0.2) + labs(x = paste("Weight 3 =", format(mean(df[-1:-100, c("X3")]), digits = 2), "(mean)"), title = "Distribution of Weight 3 Sample")
+
+		p4 <- ggplot(data = df) + geom_line(aes(x = iteration, y = X1, color = "red")) + geom_line(aes(x = iteration, y = X2, color = "green")) + geom_line(aes(x = iteration, y = X3, color = "blue")) + labs(x = "Iteration", y = "Weight Value", title = "Learning Plot")
+		grid.arrange(p1, p2, p3, p4, nrow = 2)
+		dev.off()
+
+		jpeg(paste('Plot/NIPS/', list_names[[index]], '_ternary_heat_map', '.jpg', sep = ''))
+		p1 <- ggtern(data = df, aes(X1, X2, X3, color = value)) + scale_color_gradient(low = "green", high = "red") + theme_rgbw() + geom_point() + labs(x = "Weight 1", y = "Weight 2", z = "Weight 3", title = "Ternary Heat Map")
+		print(p1)
+		dev.off()
+
+		jpeg(paste('Plot/NIPS/', list_names[[index]], '_ternary_density', '.jpg', sep = ''))
+		p1 <- ggtern(data = df, aes(X1, X2, X3, color = value)) + scale_color_gradient(low = "green", high = "red") + theme_rgbw() + geom_point() + geom_density_tern()  + stat_density_tern(aes(fill=..level.., alpha=..level..), geom='polygon') + labs(x = "Weight 1", y = "Weight 2", z = "Weight 3", title = "Ternary Density Map")
+		print(p1)
+		dev.off()
+
+		jpeg(paste('Plot/NIPS/', list_names[[index]], '_ternary_learning_plot', '.jpg', sep = ''))
+		p1 <- ggtern(data = df, aes(X1, X2, X3, color = value)) + scale_color_gradient(low = "green", high = "red") + theme_rgbw() + geom_point() + geom_path() + labs(x = "X1", y = "X2", z = "X3", title = "Ternary Learning Plot")
+		print(p1)
+		dev.off()
+
+		jpeg(paste('Plot/NIPS/', list_names[[index]], '_graph_box_plot', '.jpg', sep = ''))
+		p1 <- ggplot(stack(df[, c("X1", "X2", "X3")])) + geom_boxplot(aes(x = ind, y = values, fill = ind)) + labs(x = "Network Layer Weight", y = "Value", title = "Network Layer Weight Box Plot")
+		print(p1)
+		dev.off()
+	}, tmp$MCMC, tmp$simulation_names)
+
+
+rm(tmp)
+```
+
+```{r plot}
+tmp = list()
+tmp$list_simulation_1_ER = list_GradientDescent_result[[1]]$result_dataframe
+tmp$list_simulation_2_ER = list_GradientDescent_result[[2]]$result_dataframe
+list_names = list("Unweigthed_ER",
+		    "Distance_Weighted_ER")
+for (i in 1:length(tmp)){
+	jpeg(paste('Plot/NIPS/', list_names[[i]], '_histogram_learning_curve', '.jpg', sep = ''))
+	df = tmp[[i]]
+	df$iteration = 1:dim(df)[1]
+	p <- ggplot(data = df) + geom_line(aes(x = iteration, y = X1, color = "red")) + geom_line(aes(x = iteration, y = X2, color = "green")) + geom_line(aes(x = iteration, y = X3, color = "blue")) + labs(x = "Iteration", y = "Weight Value", title = "Learning Plot")
+	print(p)
+	dev.off()
+}
+tmp = list()
+tmp$list_simulation_3 = list_GradientDescent_result[[3]]$result_dataframe[1:500, ]
+tmp$list_simulation_4 = list_GradientDescent_result[[4]]$result_dataframe[1:500, ]
+tmp$list_simulation_5 = list_GradientDescent_result[[5]]$result_dataframe[1:500, ]
+list_names = list( "Unweighted_MindPaths",
+		    "Distance_Weighted_MindPaths",
+		    "Distance_Weighted_Replaced_MindPaths")
+for (i in 1:length(tmp)){
+	jpeg(paste('Plot/NIPS/', list_names[[i]], '_histogram_learning_curve', '.jpg', sep = ''))
+	df = tmp[[i]]
+	df$iteration = 1:dim(df)[1]
+	p <- ggplot(data = df) + geom_line(aes(x = iteration, y = X1, color = "red")) + geom_line(aes(x = iteration, y = X2, color = "green")) + geom_line(aes(x = iteration, y = X3, color = "blue"))  + geom_line(aes(x = iteration, y = X4, color = "black")) + labs(x = "Iteration", y = "Weight Value", title = "Learning Plot")
+	print(p)
+	dev.off()
+}
+```
+
+```{r plot}
+tmp = list()
+tmp$list_simulation_1_ER = list_MCMC_result[[1]]
+tmp$list_simulation_2_ER = list_MCMC_result[[2]]
+list_names = list("Unweigthed_ER",
+		    "Distance_Weighted_ER")
+for (i in 1:length(tmp)){
+	jpeg(paste('Plot/NIPS/', list_names[[i]], '_histogram_learning_curve', '.jpg', sep = ''))
+	df = tmp[[i]]
+	df$iteration = 1:dim(df)[1]
+	p <- ggplot(data = df) + geom_line(aes(x = iteration, y = X1, color = "red")) + geom_line(aes(x = iteration, y = X2, color = "green")) + geom_line(aes(x = iteration, y = X3, color = "blue")) + labs(x = "Iteration", y = "Weight Value", title = "Learning Plot")
+	print(p)
+	dev.off()
+}
+tmp = list()
+tmp$list_simulation_3 = list_MCMC_result[[3]]
+tmp$list_simulation_4 = list_MCMC_result[[4]]
+tmp$list_simulation_5 = list_MCMC_result[[5]]
+list_names = list( "Unweighted_MindPaths",
+		    "Distance_Weighted_MindPaths",
+		    "Distance_Weighted_Replaced_MindPaths")
+for (i in 1:length(tmp)){
+	jpeg(paste('Plot/NIPS/', list_names[[i]], '_histogram_learning_curve', '.jpg', sep = ''))
+	df = tmp[[i]]
+	df$iteration = 1:dim(df)[1]
+	p <- ggplot(data = df) + geom_line(aes(x = iteration, y = X1, color = "red")) + geom_line(aes(x = iteration, y = X2, color = "green")) + geom_line(aes(x = iteration, y = X3, color = "blue"))  + geom_line(aes(x = iteration, y = X4, color = "black")) + labs(x = "Iteration", y = "Weight Value", title = "Learning Plot")
+	print(p)
+	dev.off()
+}
+```
+
+```{r plot}
+tmp = list()
+tmp$list_simulation_1_ER = list_GFP_df[[1]]
+tmp$list_simulation_2_ER = list_GFP_df[[2]]
+list_names = list("Unweigthed_ER",
+		    "Distance_Weighted_ER")
+for (i in 1:length(tmp)){
+	jpeg(paste('Plot/NIPS/', list_names[[i]], '_histogram_learning_curve', '.jpg', sep = ''))
+	df = tmp[[i]]
+	df$iteration = 1:dim(df)[1]
+	p <- ggplot(data = df) + geom_line(aes(x = iteration, y = x1, color = "red")) + geom_line(aes(x = iteration, y = x2, color = "green")) + geom_line(aes(x = iteration, y = x3, color = "blue")) + labs(x = "Iteration", y = "Weight Value", title = "Learning Plot")
+	print(p)
+	dev.off()
+}
+tmp = list()
+tmp$list_simulation_3 = list_GFP_df[[3]]
+tmp$list_simulation_4 = list_GFP_df[[4]]
+tmp$list_simulation_5 = list_GFP_df[[5]]
+list_names = list( "Unweighted_MindPaths",
+		    "Distance_Weighted_MindPaths",
+		    "Distance_Weighted_Replaced_MindPaths")
+for (i in 1:length(tmp)){
+	jpeg(paste('Plot/NIPS/', list_names[[i]], '_histogram_learning_curve', '.jpg', sep = ''))
+	df = tmp[[i]]
+	df$iteration = 1:dim(df)[1]
+	p <- ggplot(data = df) + geom_line(aes(x = iteration, y = x1, color = "red")) + geom_line(aes(x = iteration, y = x2, color = "green")) + geom_line(aes(x = iteration, y = x3, color = "blue"))  + geom_line(aes(x = iteration, y = x4, color = "black")) + labs(x = "Iteration", y = "Weight Value", title = "Learning Plot")
+	print(p)
+	dev.off()
+}
+```

@@ -1,0 +1,436 @@
+---
+title: "MindPaths_Simulation"
+author: "Mohammad Isyroqi Fathan"
+date: "October 6, 2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r library, include = FALSE}
+## Include/Use libraries
+library(dplyr)
+library(reshape)
+library(igraph)
+library(ggplot2)
+library(ggtern)
+library(truncnorm)
+library(parallel)
+library(expm)
+library(entropy)
+library(boot)
+```
+
+```{r load_data}
+load('../../../RData/NIPS/NIPS_Simulation.RData')
+```
+
+```{r Functions}
+CalculateAggregatedMultiplexAdjacencyMatrix <- function(networks, weights){
+  return(Reduce("+", mapply(function(network, weight){
+      return(weight * network)
+    }, networks, weights, SIMPLIFY = FALSE))
+  )
+}
+
+CalculateProbabilityMatrix <- function(adjacency_matrix_aggregate){
+  # Probability_i_j = Value_i_j/sum_per_row 
+  row_normalizing_constant = 1/apply(adjacency_matrix_aggregate, 1, sum)
+  row_normalizing_constant[which(is.infinite(row_normalizing_constant))] <- 0
+  return(adjacency_matrix_aggregate * row_normalizing_constant)
+}
+##============================================================================================================================
+### Trace Generation
+GenerateTrace <- function(probability_matrix, starting_node, path_length){
+  path_trace = list(starting_node)
+  for (i in 1:path_length){
+    # Traverse one node from current node
+    path_trace[[i+1]] = sample(1:dim(probability_matrix)[1], size = 1, prob = probability_matrix[path_trace[[i]], ])
+  }
+  return(path_trace)
+}
+
+## To Do: Fix and optimize how to get Transition Matrix (Problem is how to do pass by reference)
+CalculateTraceMatrix <- function(traces, number_of_nodes){
+  # # For every trace in traces, create trace_matrix. Then Reduce with "+".
+  # Reduce("+", lapply(traces, function(path_trace){
+  #   # Create trace_matrix per trace
+  #   trace_matrix = matrix(0, number_of_nodes, number_of_nodes)
+  #   for (i in 1:(length(path_trace) - 1)){
+  #     trace_matrix[path_trace[[i]], path_trace[[i + 1]]] = trace_matrix[path_trace[[i]], path_trace[[i + 1]]] + 1
+  #   }
+  #   return(trace_matrix)
+  # }))
+  trace_matrix = matrix(0, number_of_nodes, number_of_nodes)
+  for (i in 1:length(traces)){
+    for(j in 1:(length(traces[[i]]) - 1)){
+      trace_matrix[traces[[i]][[j]], traces[[i]][[j + 1]]] = trace_matrix[traces[[i]][[j]], traces[[i]][[j + 1]]] + 1
+    }
+  }
+  return(trace_matrix)
+}
+
+GenerateTraceForRandomNNode <- function(probability_matrix, path_length, number_of_nodes, probability_starting_node = NULL){
+  return(lapply(1:number_of_nodes, function(i, probability_matrix, path_length, probability_starting_node){
+            # Initialize starting_node to NULL
+            starting_node = NULL
+            if (is.null(probability_starting_node)) {
+              # Sampling starting_node from uniform distribution
+              starting_node = sample(1:dim(probability_matrix)[1], 1)
+            }
+            else {
+              # Sampling starting_node from probability_starting_node distribution
+              starting_node = sample(1:dim(probability_matrix)[1], 1, prob = probability_starting_node)
+            }
+            GenerateTrace(probability_matrix, starting_node, path_length)
+         }, probability_matrix, path_length, probability_starting_node))
+}
+##============================================================================================================================
+```
+
+
+```{r list_simulation}
+list_simulation_1 = list()
+list_simulation_2 = list()
+```
+
+```{r simulation_1}
+# Simulate synthetic data unweighted
+# Define Variables
+list_simulation_1$parameter = list()
+list_simulation_1$parameter$network_density_probability = c(0.01, 0.0008, 0.01)
+list_simulation_1$parameter$n = 1972
+# list_simulation_1$parameter$network_weights = c(0.2, 0.3, 0.5)
+list_simulation_1$parameter$network_weights = c(0.63, 0.11, 0.26)
+#list_simulation_1$parameter$network_weights = c(0.18, 0.37, 0.45)
+list_simulation_1$parameter$number_of_traces = 1000
+
+# ER Network
+# Generate Network
+list_simulation_1$ER = list()
+list_simulation_1$ER$network = lapply(list_simulation_1$parameter$network_density_probability, erdos.renyi.game, n = list_simulation_1$parameter$n, type = c("gnp", "gnm"), directed = TRUE, loops = FALSE)
+list_simulation_1$ER$network = lapply(list_simulation_1$ER$network, as_adjacency_matrix, sparse = FALSE)
+
+# Generate Multiplex Network
+list_simulation_1$ER$Aggregate = CalculateAggregatedMultiplexAdjacencyMatrix(list_simulation_1$ER$network, list_simulation_1$parameter$network_weights)
+
+# Calculate Probability Matrix
+list_simulation_1$ER$Probability = CalculateProbabilityMatrix(list_simulation_1$ER$Aggregate)
+
+# Generate Random Traces
+list_simulation_1$ER$traces = GenerateTraceForRandomNNode(list_simulation_1$ER$Probability, 25, list_simulation_1$parameter$number_of_traces)
+
+# Generate Trace Matrix
+list_simulation_1$ER$traces_matrix = CalculateTraceMatrix(list_simulation_1$ER$traces, list_simulation_1$parameter$n)
+
+# Regular Network
+# Generate Network
+list_simulation_1$Regular = list()
+list_simulation_1$Regular$network = lapply(list_simulation_1$parameter$network_density_probability * list_simulation_1$parameter$n, sample_k_regular, no.of.nodes = list_simulation_1$parameter$n, directed = TRUE, multiple = FALSE)
+list_simulation_1$Regular$network = lapply(list_simulation_1$Regular$network, as_adjacency_matrix, sparse = FALSE)
+
+# Generate Multiplex Network
+list_simulation_1$Regular$Aggregate = CalculateAggregatedMultiplexAdjacencyMatrix(list_simulation_1$Regular$network, list_simulation_1$parameter$network_weights)
+
+# Calculate Probability Matrix
+list_simulation_1$Regular$Probability = CalculateProbabilityMatrix(list_simulation_1$Regular$Aggregate)
+
+# Generate Random Traces
+list_simulation_1$Regular$traces = GenerateTraceForRandomNNode(list_simulation_1$Regular$Probability, 25, list_simulation_1$parameter$number_of_traces)
+
+# Generate Trace Matrix
+list_simulation_1$Regular$traces_matrix = CalculateTraceMatrix(list_simulation_1$Regular$traces, list_simulation_1$parameter$n)
+```
+
+```{r simulation_2}
+# Simulate synthetic data unweighted
+# Define Variables
+list_simulation_2$parameter = list()
+list_simulation_2$parameter$network_density_probability = c(0.01, 0.0008, 0.01)
+list_simulation_2$parameter$n = 1972
+# list_simulation_2$parameter$network_weights = c(0.2, 0.3, 0.5)
+list_simulation_2$parameter$network_weights = c(0.63, 0.11, 0.26)
+#list_simulation_2$parameter$network_weights = c(0.18, 0.37, 0.45)
+list_simulation_2$parameter$number_of_traces = 1000
+list_simulation_2$parameter$noise_probability = 0.3
+
+# ER Network
+# Generate Network
+list_simulation_2$ER = list()
+list_simulation_2$ER$network = lapply(list_simulation_2$parameter$network_density_probability, erdos.renyi.game, n = list_simulation_2$parameter$n, type = c("gnp", "gnm"), directed = TRUE, loops = FALSE)
+list_simulation_2$ER$network = lapply(list_simulation_2$ER$network, as_adjacency_matrix, sparse = FALSE)
+
+list_simulation_2$ER$network_noised = lapply(1:length(list_simulation_2$ER$network), function(x, list_network, noise, list_network_density){
+	network = list_network[[x]]
+	network_density = list_network_density[[x]]
+	network = t(apply(network, c(1), function(node_edges, noise, network_density){
+		flip_probability = noise * network_density
+		flipped_edges = sample(c(TRUE, FALSE), length(node_edges), replace = TRUE, prob = c(flip_probability, 1 - flip_probability))
+		node_edges[flipped_edges] = 1 - node_edges[flipped_edges]
+		return(node_edges)
+	 }, noise, network_density))
+	return(network)
+  }, list_simulation_2$ER$network, list_simulation_2$parameter$noise_probability, list_simulation_2$parameter$network_density_probability)
+
+# Generate Multiplex Network
+list_simulation_2$ER$Aggregate = CalculateAggregatedMultiplexAdjacencyMatrix(list_simulation_2$ER$network, list_simulation_2$parameter$network_weights)
+
+# Calculate Probability Matrix
+list_simulation_2$ER$Probability = CalculateProbabilityMatrix(list_simulation_2$ER$Aggregate)
+
+# Generate Random Traces
+list_simulation_2$ER$traces = GenerateTraceForRandomNNode(list_simulation_2$ER$Probability, 25, list_simulation_2$parameter$number_of_traces)
+
+# Generate Trace Matrix
+list_simulation_2$ER$traces_matrix = CalculateTraceMatrix(list_simulation_2$ER$traces, list_simulation_2$parameter$n)
+
+# Regular Network
+# Generate Network
+list_simulation_2$Regular = list()
+list_simulation_2$Regular$network = lapply(list_simulation_2$parameter$network_density_probability * list_simulation_2$parameter$n, sample_k_regular, no.of.nodes = list_simulation_2$parameter$n, directed = TRUE, multiple = FALSE)
+list_simulation_2$Regular$network = lapply(list_simulation_2$Regular$network, as_adjacency_matrix, sparse = FALSE)
+
+# Generate Multiplex Network
+list_simulation_2$Regular$Aggregate = CalculateAggregatedMultiplexAdjacencyMatrix(list_simulation_2$Regular$network, list_simulation_2$parameter$network_weights)
+
+# Calculate Probability Matrix
+list_simulation_2$Regular$Probability = CalculateProbabilityMatrix(list_simulation_2$Regular$Aggregate)
+
+# Generate Random Traces
+list_simulation_2$Regular$traces = GenerateTraceForRandomNNode(list_simulation_2$Regular$Probability, 25, list_simulation_2$parameter$number_of_traces)
+
+# Generate Trace Matrix
+list_simulation_2$Regular$traces_matrix = CalculateTraceMatrix(list_simulation_2$Regular$traces, list_simulation_2$parameter$n)
+```
+
+
+```{r Optimize}
+GoldenSection <- function(weight_vector, direction, adjacency_matrix, trace_matrix, alpha_max, ObjectiveFunction, number_of_iteration, probability_multiplex_matrix = NULL ){
+
+	golden_ratio = (1+sqrt(5))/2
+
+	lower_bound_alpha = 0
+	upper_bound_alpha = alpha_max
+	uncertainty_width = alpha_max
+
+	last_alpha = upper_bound_alpha - uncertainty_width/golden_ratio
+	current_alpha = upper_bound_alpha - uncertainty_width/golden_ratio
+	last_objective = ObjectiveFunction(weight_vector + current_alpha * direction, adjacency_matrix, trace_matrix)
+	origin_objective = ObjectiveFunction(weight_vector, adjacency_matrix, trace_matrix)
+
+	is_alpha_search_direction_right = TRUE
+
+	for ( i in 1:number_of_iteration ){
+		if (is_alpha_search_direction_right){
+			current_alpha = lower_bound_alpha + uncertainty_width/golden_ratio
+			current_objective = ObjectiveFunction(weight_vector + current_alpha * direction, adjacency_matrix, trace_matrix)
+
+			if (current_objective > last_objective){
+				upper_bound_alpha = current_alpha
+				uncertainty_width = upper_bound_alpha - lower_bound_alpha
+
+				is_alpha_search_direction_right = FALSE
+			}
+			else {
+				lower_bound_alpha = last_alpha
+				uncertainty_width = upper_bound_alpha - lower_bound_alpha
+
+				last_alpha = current_alpha
+				last_objective = current_objective
+			}
+		}
+		else {
+			current_alpha = upper_bound_alpha - uncertainty_width/golden_ratio
+			current_objective = ObjectiveFunction(weight_vector + current_alpha * direction, adjacency_matrix, trace_matrix)
+
+			if (current_objective > last_objective){
+				lower_bound_alpha = current_alpha
+				uncertainty_width = upper_bound_alpha - lower_bound_alpha
+
+				is_alpha_search_direction_right = TRUE
+			}
+			else {
+				upper_bound_alpha = last_alpha
+				uncertainty_width = upper_bound_alpha - lower_bound_alpha
+
+				last_alpha = current_alpha
+				last_objective = current_objective
+			}
+		}
+	}
+
+	if (last_objective > origin_objective) {
+		print("here")
+		return(0)
+	}
+	else {
+		return (last_alpha)
+	}
+
+}
+
+ggtern(data = tmp[1:50, ], aes(X1, X2, X3, color = value)) + scale_color_gradient(low = "green", high = "red") + theme_rgbw() + geom_point() + geom_path() + labs(x = "X1", y = "X2", z = "X3", title = "Ternary Learning Plot")
+
+	x = lapply(seq(0, 1, 1/20), function(weight_1){
+		  lapply(seq(0, 1 - weight_1, 1/20), function(weight_2, weight_1){
+				 list(c(weight_1, weight_2, 1 - (weight_1 + weight_2)))
+			    }, weight_1)
+  })
+	df = data.frame()
+	for (i in 1:length(x)){
+		for (j in 1:length(x[[i]])){
+			df = rbind(df, data.frame(w1 = x[[i]][[j]][[1]][[1]],
+						  w2 = x[[i]][[j]][[1]][[2]],
+						  w3 = x[[i]][[j]][[1]][[3]]))
+		}
+	}
+
+	C = list()
+	for (i in 1:dim(df)[1]){
+		x = as.numeric(df[i, ])
+		if (length(which(x == 0)) > 0){
+			C[[i]] = 0
+		}
+		else{
+			C[[i]] = as.numeric((x %*% A)/sum(x %*% A)) * B 
+		}
+	}
+	C = sapply(C, sum)
+	
+```
+
+```{r GradientDescent}
+ObjectiveFunction <- function(weight_vector, adjacency_matrix_vector, traces_vector, degree_matrix_vector){
+	return( sum(traces_vector * (log(adjacency_matrix_vector %*% weight_vector) - log(degree_matrix_vector %*% weight_vector))))
+}
+
+GradientFunction <- function(weight_vector, adjacency_matrix_vector, traces_vector, degree_matrix_vector){
+	numerator = as.numeric(adjacency_matrix_vector %*% weight_vector)
+	denominator = as.numeric(degree_matrix_vector %*% weight_vector)
+	result = apply(traces_vector * ((adjacency_matrix_vector / numerator) - (degree_matrix_vector / denominator)), c(2) , sum)
+	return(result)
+}
+
+PreprocessA_q <- function(A, weight_vector){
+	bound_index = which((weight_vector == 0) | (weight_vector == 1))
+	for (i in bound_index){
+		tmp_vector = rep(0, length(weight_vector))
+		tmp_vector[i] = 1
+		A = rbind(A, tmp_vector)
+	}
+	return(A)
+}
+
+GradientDescent <- function(weight_vector, adjacency_matrix, trace_matrix, ObjectiveFunction, GradientFunction, alpha = 0.01, epsilon = 1e-5, max_iteration = 10000){
+	weight_vector = weight_vector / sum(weight_vector)
+	# Convert Adjacency Matrix list and trace matrix to adjacency matrix vector and trace vector
+	adjacency_matrix_vector = sapply(adjacency_matrix, as.numeric)
+	degree_matrix_vector = lapply(adjacency_matrix, function(x){t(apply(x, c(1), function(x){rep(sum(x), length(x))}))})
+	degree_matrix_vector = sapply(degree_matrix_vector, as.numeric)
+	traces_vector = as.numeric(trace_matrix)
+
+	# Subset data to traces data that exist
+	adjacency_matrix_vector = adjacency_matrix_vector[which(traces_vector > 0), ]
+	degree_matrix_vector = degree_matrix_vector[which(traces_vector > 0), ]
+	traces_vector = traces_vector[which(traces_vector > 0)]
+
+	epsilon = abs(sum(traces_vector) * log(1 - epsilon))
+
+	k = 1
+	list_points = list(weight_vector)
+	list_gradient_original = list()
+	list_gradient = list()
+	list_objective = list()
+
+	# Initial Calculation
+	list_gradient_original[[k]] = GradientFunction(list_points[[k]], adjacency_matrix_vector, traces_vector, degree_matrix_vector)
+	length_gradient_original = sqrt(sum(list_gradient_original[[k]] ^ 2))
+	list_gradient_original[[k]] = list_gradient_original[[k]] / sqrt(sum(list_gradient_original[[k]] ^ 2))
+	list_objective[[k]] = ObjectiveFunction(list_points[[k]], adjacency_matrix_vector, traces_vector, degree_matrix_vector)
+
+	# Build A_q matrix
+	A = matrix(1, 1, length(adjacency_matrix))
+
+	#while ((k < max_iteration) & (sqrt(sum(gradient ^ 2)))){
+	while ((k <= max_iteration) & ( length_gradient_original > epsilon )){
+		print(k)
+		list_gradient_original[[k]] = GradientFunction(list_points[[k]], adjacency_matrix_vector, traces_vector, degree_matrix_vector)
+		length_gradient_original = sqrt(sum(list_gradient_original[[k]] ^ 2))
+		list_gradient_original[[k]] = list_gradient_original[[k]] / sqrt(sum(list_gradient_original[[k]] ^ 2))
+		list_objective[[k]] = ObjectiveFunction(list_points[[k]], adjacency_matrix_vector, traces_vector, degree_matrix_vector)
+
+		# Preprocessed A_q
+		A_q = PreprocessA_q(A, list_points[[k]])
+
+		# Compute P matrix
+		P = diag(max(dim(A_q))) - (t(A_q) %*% solve(A_q %*% t(A_q)) %*% A_q)
+
+		# Compute projected gradient
+		list_gradient[[k]] = P %*% list_gradient_original[[k]]
+
+		list_points[[k + 1]] = list_points[[k]] + alpha * list_gradient[[k]]
+
+		k = k + 1
+	}
+
+	# Remove Last Point
+	list_points[[k]] = NULL
+
+	result_dataframe = Reduce(rbind, mapply(function(point, likelihood){
+		result = data.frame(t(point))
+		result$value = likelihood
+		return(result)
+	  }, list_points, list_objective, SIMPLIFY = FALSE))
+
+	list_result = list()
+	list_result$result_dataframe = result_dataframe
+	list_result$list_gradient_original = list_gradient_original
+	list_result$list_gradient = list_gradient
+	return(list_result)
+
+}
+```
+
+```{r network_recovery}
+GradientDescent <- function(weight_vector, adjacency_matrix, trace_matrix, ObjectiveFunction, GradientFunction, alpha = 0.01, epsilon = 1e-5, max_iteration = 10000){
+NetworkRecovery <- function(weight_vector, adjacency_matrix, trace_matrix){
+	adjacency_matrix_recovered = lapply(1:length(adjacency_matrix), function(network_id, list_network, weight_vector, trace_matrix){
+		multiplex_original = CalculateAggregatedMultiplexAdjacencyMatrix(list_network, weight_vector)
+		multiplex_original = CalculateProbabilityMatrix(multiplex_original)
+		likelihood_original = t(sapply(1:dim(multiplex_original)[1], function(index, multiplex_original, trace_matrix){
+					node_edges_probability = multiplex_original[index, ]
+					node_trace_data = trace_matrix[index, ]
+					return(dbinom(node_trace_data, sum(node_trace_data), node_edges_probability))
+					}, multiplex_original, trace_matrix))
+		list_network_flipped = list_network
+		list_network_flipped[[network_id]] = 1 - list_network_flipped[[network_id]]
+		multiplex_flipped = CalculateAggregatedMultiplexAdjacencyMatrix(list_network_flipped, weight_vector)
+		multiplex_flipped = CalculateProbabilityMatrix
+		likelihood_flipped = t(sapply(1:dim()))
+		return(network_recovered)
+	}, adjacency_matrix, weight_vector, trace_matrix)
+}
+```
+
+```{r test}
+test_result = GradientDescent(c(0.3, 0.3, 0.4), list_simulation_1$ER$network, list_simulation_1$ER$traces_matrix, ObjectiveFunction, GradientFunction, epsilon = 1e-4)
+```
+
+```{r MindPaths_Simulation_Data}
+starting_point = runif(3)
+starting_point = starting_point / sum(starting_point)
+list_GradientDescent_result = list()
+list_GradientDescent_result[[1]] = GradientDescent(starting_point, list_simulation_1$ER$network, list_simulation_1$ER$traces_matrix, ObjectiveFunction, GradientFunction, epsilon = 1e-4)
+list_GradientDescent_result[[2]] = GradientDescent(starting_point, list_simulation_2$ER$network, list_simulation_2$ER$traces_matrix, ObjectiveFunction, GradientFunction, epsilon = 1e-4)
+starting_point = runif(4)
+starting_point = starting_point / sum(starting_point)
+list_GradientDescent_result[[3]] = GradientDescent(starting_point, list_simulation_3$network, list_simulation_3$traces_matrix, ObjectiveFunction, GradientFunction, epsilon = 1e-4)
+list_GradientDescent_result[[4]] = GradientDescent(starting_point, list_simulation_4$network, list_simulation_4$traces_matrix, ObjectiveFunction, GradientFunction, epsilon = 1e-4)
+list_GradientDescent_result[[5]] = GradientDescent(starting_point, list_simulation_5$network, list_simulation_5$traces_matrix, ObjectiveFunction, GradientFunction, epsilon = 1e-4)
+```
+
+```{r save_data}
+save(list = ls(), file = 'RData/GradientDescent.RData')
+```

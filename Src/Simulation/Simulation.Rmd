@@ -1,0 +1,288 @@
+---
+title: "MindPaths_Simulation_Modified"
+author: "Mohammad Isyroqi Fathan"
+date: "October 6, 2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r library, include = FALSE}
+## Include/Use libraries
+library(ggplot2)
+library(parallel)
+library(igraph)
+```
+
+```{r Functions}
+CalculateAggregatedMultiplexAdjacencyMatrix <- function(networks, weights){
+  return(Reduce("+", mapply(function(network, weight){
+      return(weight * network)
+    }, networks, weights, SIMPLIFY = FALSE))
+  )
+}
+
+CalculateProbabilityMatrix <- function(adjacency_matrix_aggregate){
+  # Probability_i_j = Value_i_j/sum_per_row 
+  row_normalizing_constant = 1/apply(adjacency_matrix_aggregate, 1, sum)
+  row_normalizing_constant[which(is.infinite(row_normalizing_constant))] <- 0
+  return(adjacency_matrix_aggregate * row_normalizing_constant)
+}
+##============================================================================================================================
+### Trace Generation
+GenerateTrace <- function(probability_matrix, starting_node, path_length){
+  path_trace = list(starting_node)
+  for (i in 1:path_length){
+    # Traverse one node from current node
+    path_trace[[i+1]] = sample(1:dim(probability_matrix)[1], size = 1, prob = probability_matrix[path_trace[[i]], ])
+  }
+  return(path_trace)
+}
+
+## To Do: Fix and optimize how to get Transition Matrix (Problem is how to do pass by reference)
+CalculateTraceMatrix <- function(traces, number_of_nodes){
+  # # For every trace in traces, create trace_matrix. Then Reduce with "+".
+  # Reduce("+", lapply(traces, function(path_trace){
+  #   # Create trace_matrix per trace
+  #   trace_matrix = matrix(0, number_of_nodes, number_of_nodes)
+  #   for (i in 1:(length(path_trace) - 1)){
+  #     trace_matrix[path_trace[[i]], path_trace[[i + 1]]] = trace_matrix[path_trace[[i]], path_trace[[i + 1]]] + 1
+  #   }
+  #   return(trace_matrix)
+  # }))
+  trace_matrix = matrix(0, number_of_nodes, number_of_nodes)
+  for (i in 1:length(traces)){
+    for(j in 1:(length(traces[[i]]) - 1)){
+      trace_matrix[traces[[i]][[j]], traces[[i]][[j + 1]]] = trace_matrix[traces[[i]][[j]], traces[[i]][[j + 1]]] + 1
+    }
+  }
+  return(trace_matrix)
+}
+
+GenerateTraceForRandomNNode <- function(probability_matrix, path_length, number_of_nodes, probability_starting_node = NULL){
+  return(lapply(1:number_of_nodes, function(i, probability_matrix, path_length, probability_starting_node){
+            # Initialize starting_node to NULL
+            starting_node = NULL
+            if (is.null(probability_starting_node)) {
+              # Sampling starting_node from uniform distribution
+              starting_node = sample(1:dim(probability_matrix)[1], 1)
+            }
+            else {
+              # Sampling starting_node from probability_starting_node distribution
+              starting_node = sample(1:dim(probability_matrix)[1], 1, prob = probability_starting_node)
+            }
+            GenerateTrace(probability_matrix, starting_node, path_length)
+         }, probability_matrix, path_length, probability_starting_node))
+}
+##============================================================================================================================
+```
+
+
+```{r define_variables}
+list_simulation_1 = list()
+list_simulation_2 = list()
+list_simulation_3 = list()
+list_simulation_4 = list()
+list_simulation_5 = list()
+```
+
+```{r simulation_1}
+# Simulate synthetic data unweighted
+# Define Variables
+list_simulation_1$parameter = list()
+list_simulation_1$parameter$network_density_probability = c(0.01, 0.0008, 0.01)
+list_simulation_1$parameter$n = 1972
+# list_simulation_1$parameter$network_weights = c(0.2, 0.3, 0.5)
+list_simulation_1$parameter$network_weights = c(0.63, 0.11, 0.26)
+list_simulation_1$parameter$number_of_traces = 1000 #12000
+
+# ER Network
+# Generate Network
+list_simulation_1$ER = list()
+list_simulation_1$ER$network = lapply(list_simulation_1$parameter$network_density_probability, erdos.renyi.game, n = list_simulation_1$parameter$n, type = c("gnp", "gnm"), directed = TRUE, loops = FALSE)
+list_simulation_1$ER$network = lapply(list_simulation_1$ER$network, as_adjacency_matrix, sparse = FALSE)
+
+# Generate Multiplex Network
+list_simulation_1$ER$Aggregate = CalculateAggregatedMultiplexAdjacencyMatrix(list_simulation_1$ER$network, list_simulation_1$parameter$network_weights)
+
+# Calculate Probability Matrix
+list_simulation_1$ER$Probability = CalculateProbabilityMatrix(list_simulation_1$ER$Aggregate)
+
+# Generate Random Traces
+list_simulation_1$ER$traces = GenerateTraceForRandomNNode(list_simulation_1$ER$Probability, 25, list_simulation_1$parameter$number_of_traces)
+
+# Generate Trace Matrix
+list_simulation_1$ER$traces_matrix = CalculateTraceMatrix(list_simulation_1$ER$traces, list_simulation_1$parameter$n)
+```
+
+```{r simulation_2}
+# Simulate synthetic data unweighted
+# Define Variables
+list_simulation_2$parameter = list()
+list_simulation_2$parameter$network_density_probability = c(0.01, 0.0008, 0.01)
+list_simulation_2$parameter$n = 1972
+# list_simulation_2$parameter$network_weights = c(0.2, 0.3, 0.5)
+list_simulation_2$parameter$network_weights = c(0.13, 0.68, 0.19)
+list_simulation_2$parameter$number_of_traces = 1000 #12000
+
+# ER Network
+# Generate Network
+list_simulation_2$ER = list()
+list_simulation_2$ER$network = lapply(list_simulation_2$parameter$network_density_probability, erdos.renyi.game, n = list_simulation_2$parameter$n, type = c("gnp", "gnm"), directed = TRUE, loops = FALSE)
+# list_simulation_2$ER$network = lapply(list_simulation_2$ER$network, as_adjacency_matrix, sparse = FALSE)
+list_simulation_2$ER$network = lapply(list_simulation_2$ER$network, distances, mode = c("out"))
+list_simulation_2$ER$network = lapply(list_simulation_2$ER$network, function(network){
+					      network = 1/network
+					      network[which(is.infinite(network))] <- 0
+					      return(network)
+					})
+
+# Generate Multiplex Network
+list_simulation_2$ER$Aggregate = CalculateAggregatedMultiplexAdjacencyMatrix(list_simulation_2$ER$network, list_simulation_2$parameter$network_weights)
+
+# Calculate Probability Matrix
+list_simulation_2$ER$Probability = CalculateProbabilityMatrix(list_simulation_2$ER$Aggregate)
+
+# Generate Random Traces
+list_simulation_2$ER$traces = GenerateTraceForRandomNNode(list_simulation_2$ER$Probability, 25, list_simulation_2$parameter$number_of_traces)
+
+# Generate Trace Matrix
+list_simulation_2$ER$traces_matrix = CalculateTraceMatrix(list_simulation_2$ER$traces, list_simulation_2$parameter$n)
+```
+
+```{r simulation_3}
+# Simulate synthetic data unweighted
+# Define Variables
+list_simulation_3$parameter = list()
+list_simulation_3$parameter$network_density_probability = c(0.01, 0.0008, 0.01)
+list_simulation_3$parameter$n = 1972
+# list_simulation_1$parameter$network_weights = c(0.2, 0.3, 0.5)
+list_simulation_3$parameter$network_weights = c(0.63, 0.11, 0.26)
+list_simulation_3$parameter$number_of_traces = 1000 #12000
+
+# ER Network
+# Generate Network
+list_simulation_3$ER = list()
+list_simulation_3$ER$network = lapply(list_simulation_3$parameter$network_density_probability, erdos.renyi.game, n = list_simulation_3$parameter$n, type = c("gnp", "gnm"), directed = TRUE, loops = FALSE)
+list_simulation_3$ER$network = lapply(list_simulation_3$ER$network, as_adjacency_matrix, sparse = FALSE)
+
+list_simulation_3$ER$network = lapply(list_simulation_3$ER$network, function(x){x * runif(dim(x)[1] * dim(x)[2])})
+list_simulation_3$ER$network = lapply(list_simulation_3$ER$network, function(x){
+					      tmp = x / apply(x, c(1), sum)
+					      tmp[which(is.nan(tmp))] <- 0
+					      return(tmp)
+					})
+
+# Generate Multiplex Network
+list_simulation_3$ER$Aggregate = CalculateAggregatedMultiplexAdjacencyMatrix(list_simulation_3$ER$network, list_simulation_3$parameter$network_weights)
+
+# Calculate Probability Matrix
+list_simulation_3$ER$Probability = CalculateProbabilityMatrix(list_simulation_3$ER$Aggregate)
+
+# Generate Random Traces
+list_simulation_3$ER$traces = GenerateTraceForRandomNNode(list_simulation_3$ER$Probability, 25, list_simulation_3$parameter$number_of_traces)
+
+# Generate Trace Matrix
+list_simulation_3$ER$traces_matrix = CalculateTraceMatrix(list_simulation_3$ER$traces, list_simulation_3$parameter$n)
+```
+
+```{r simulation_4}
+# Simulate synthetic data unweighted
+# Define Variables
+list_simulation_4$parameter = list()
+list_simulation_4$parameter$network_density_probability = c(0.01, 0.0008, 0.01)
+list_simulation_4$parameter$n = 1972
+# list_simulation_1$parameter$network_weights = c(0.2, 0.3, 0.5)
+list_simulation_4$parameter$network_weights = c(0.63, 0.11, 0.26)
+list_simulation_4$parameter$number_of_traces = 1000 #12000
+
+# ER Network
+# Generate Network
+list_simulation_4$ER = list()
+list_simulation_4$ER$network = lapply(list_simulation_4$parameter$network_density_probability, erdos.renyi.game, n = list_simulation_4$parameter$n, type = c("gnp", "gnm"), directed = TRUE, loops = FALSE)
+list_simulation_4$ER$network = lapply(list_simulation_4$ER$network, as_adjacency_matrix, sparse = FALSE)
+
+list_simulation_4$ER$network = lapply(list_simulation_4$ER$network, function(x){x * runif(dim(x)[1] * dim(x)[2])})
+list_simulation_4$ER$network = lapply(list_simulation_4$ER$network, function(x){
+					      tmp = x / apply(x, c(1), sum)
+					      tmp[which(is.nan(tmp))] <- 0
+					      return(tmp)
+					})
+list_simulation_4$ER$network = lapply(list_simulation_4$ER$network, function(x){
+					      igraph_x = graph_from_adjacency_matrix(x, mode = c("directed"), weighted = TRUE)
+					      matrix_geodesic_path = Reduce(rbind, lapply(1:dim(x)[1], function(node, x, igraph_x, num_of_node){
+									sapply(1:num_of_node, function(j, i, igraph_x, x){
+										path_result = all_shortest_paths(igraph_x, i, j, mode = c("out"))$res
+										tmp_path = 0
+										print(0)
+# 										for (m in 1:length(path_result)){
+# 											if (length(path_result[[m]]) > 1){
+# 												tmp = 1
+# 												for (n in 1:(length(path_result[[m]]) - 1)){
+# 													tmp = tmp * x[path_result[[m]][n], path_result[[m]][n + 1]]
+# 												}
+# 												tmp_path[j] = tmp_path[j] + tmp
+# 											}
+# 										}
+									}, node, igraph_x, x)
+						}, x, igraph_x, dim(x)[2]))
+					      rownames(matrix_geodesic_path) = 1:dim(matrix_geodesic_path)[1]
+					      colnames(matrix_geodesic_path) = 1:dim(matrix_geodesic_path)[2]
+					      return(matrix_geodesic_path)
+					})
+
+# Generate Multiplex Network
+list_simulation_4$ER$Aggregate = CalculateAggregatedMultiplexAdjacencyMatrix(list_simulation_4$ER$network, list_simulation_4$parameter$network_weights)
+
+# Calculate Probability Matrix
+list_simulation_4$ER$Probability = CalculateProbabilityMatrix(list_simulation_4$ER$Aggregate)
+
+# Generate Random Traces
+list_simulation_4$ER$traces = GenerateTraceForRandomNNode(list_simulation_4$ER$Probability, 25, list_simulation_4$parameter$number_of_traces)
+
+# Generate Trace Matrix
+list_simulation_4$ER$traces_matrix = CalculateTraceMatrix(list_simulation_4$ER$traces, list_simulation_4$parameter$n)
+```
+
+```{r simulation_5}
+# Simulate synthetic data unweighted
+# Define Variables
+list_simulation_5$parameter = list()
+list_simulation_5$parameter$network_density_probability = c(0.01, 0.0008, 0.01)
+list_simulation_5$parameter$n = 1972
+# list_simulation_1$parameter$network_weights = c(0.2, 0.3, 0.5)
+list_simulation_5$parameter$network_weights = c(0.63, 0.11, 0.26)
+list_simulation_5$parameter$number_of_traces = 1000 #12000
+
+# ER Network
+# Generate Network
+list_simulation_5$ER = list()
+list_simulation_5$ER$network = lapply(list_simulation_5$parameter$network_density_probability, erdos.renyi.game, n = list_simulation_5$parameter$n, type = c("gnp", "gnm"), directed = TRUE, loops = FALSE)
+list_simulation_5$ER$network = lapply(list_simulation_5$ER$network, as_adjacency_matrix, sparse = FALSE)
+
+list_simulation_5$ER$network = lapply(list_simulation_5$ER$network, function(x){
+					      igraph_x = graph_from_adjacency_matrix(x, mode = c("directed"), weighted = TRUE)
+					      list_geodesic_path = lapply(1:dim(x)[1], function(node, igraph_x, num_of_node){
+								path_result = all_shortest_paths(igraph_x, node, 1:num_of_node, mode = c("out"))
+								pass
+						}, igraph_x, dim(x)[2])
+					})
+
+# Generate Multiplex Network
+list_simulation_5$ER$Aggregate = CalculateAggregatedMultiplexAdjacencyMatrix(list_simulation_5$ER$network, list_simulation_5$parameter$network_weights)
+
+# Calculate Probability Matrix
+list_simulation_5$ER$Probability = CalculateProbabilityMatrix(list_simulation_5$ER$Aggregate)
+
+# Generate Random Traces
+list_simulation_5$ER$traces = GenerateTraceForRandomNNode(list_simulation_5$ER$Probability, 25, list_simulation_5$parameter$number_of_traces)
+
+# Generate Trace Matrix
+list_simulation_5$ER$traces_matrix = CalculateTraceMatrix(list_simulation_5$ER$traces, list_simulation_5$parameter$n)
+```
+
+```{r save_RData}
+save(list = ls(), file = '../../../RData/NIPS/NIPS_Simulation.RData')
+```

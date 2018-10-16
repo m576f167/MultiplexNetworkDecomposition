@@ -1,0 +1,310 @@
+---
+title: "MindPaths_Build_Networks_Nelson"
+author: "Mohammad Isyroqi Fathan"
+date: "October 6, 2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r library, include = FALSE}
+## Include/Use libraries
+library(dplyr)
+library(igraph)
+library(ggplot2)
+library(ggtern)
+library(truncnorm)
+library(wordnet)
+library(RSQLite)
+library(parallel)
+library(rPython)
+library(expm)
+library(entropy)
+```
+
+```{r define_variables}
+list_file = list()
+list_raw_data = list()
+list_norm = list()
+list_network = list()
+list_ig_network = list()
+```
+
+```{r load_RData}
+load('../../RData/NIPS/NIPS.RData')
+```
+
+```{r multicore_setup}
+no_of_cores = detectCores()
+```
+
+```{r open_db, include = FALSE}
+# Name of SQLite database file
+list_file$db_file = "../../Data/Processed/MindPaths/MindPaths_v1.db"
+
+# Connect to SQLite database file
+db_connection = dbConnect(RSQLite::SQLite(), dbname = list_file$db_file)
+print("Database opened\n")
+```
+
+```{r get_game_data}
+# Get TASK_RUN_ID, USER_ID, API_TASK_ID, START_WORD, and END_WORD
+query = "
+SELECT  API_TASK_RUN_ID,
+		USER_ID,
+		API_TASK_ID,
+		START_WORD,
+		T_WORD.WORD AS END_WORD,
+		NUMBER_OF_STEPS,
+		TOTAL_TIME,
+		MEAN_TIME,
+		RESET
+FROM 
+	(SELECT T_TASK_RUN.API_TASK_RUN_ID, 
+			T_USER.USER_ID, 
+			T_TASK.API_TASK_ID, 
+			T_WORD.WORD AS START_WORD, 
+			T_TASK_INFO.END_WORD,
+			count(*) AS NUMBER_OF_STEPS,
+			sum(T_MOVE.MOVE_TIME) AS TOTAL_TIME,
+			avg(T_MOVE.MOVE_TIME) AS MEAN_TIME,
+			RESET
+	FROM 
+		T_TASK_RUN 
+	LEFT OUTER JOIN 
+		T_USER 
+	ON T_TASK_RUN.USER_ID = T_USER.ID
+	LEFT OUTER JOIN 
+		T_TASK_INFO
+	ON T_TASK_RUN.TASK_ID = T_TASK_INFO.TASK_ID
+	LEFT OUTER JOIN
+		T_TASK
+	ON T_TASK_RUN.TASK_ID = T_TASK.ID
+	LEFT OUTER JOIN
+		T_WORD
+	ON T_TASK_INFO.START_WORD = T_WORD.ID
+	LEFT OUTER JOIN
+		T_MOVE
+	ON T_TASK_RUN.ID = T_MOVE.TASK_RUN_ID
+	LEFT OUTER JOIN
+		(SELECT T_MOVE.TASK_RUN_ID AS RESET_TASK_RUN_ID,
+				count(*) AS RESET
+		 FROM T_MOVE
+		 WHERE T_MOVE.EDGE_ID IS NULL
+		 GROUP BY
+		 T_MOVE.TASK_RUN_ID)
+	ON T_TASK_RUN.ID = RESET_TASK_RUN_ID
+	GROUP BY
+	T_TASK_RUN.ID)
+LEFT OUTER JOIN
+	T_WORD
+ON END_WORD = T_WORD.ID;"
+df_task_run_statistic = dbGetQuery(db_connection, query)
+
+# Convert word list to lower case
+df_task_run_statistic$START_WORD = sapply(df_task_run_statistic$START_WORD, tolower)
+df_task_run_statistic$END_WORD = sapply(df_task_run_statistic$END_WORD, tolower)
+
+# Convert to syntactically valid names
+df_task_run_statistic$START_WORD = sapply(df_task_run_statistic$START_WORD, make.names)
+df_task_run_statistic$END_WORD = sapply(df_task_run_statistic$END_WORD, make.names)
+
+# Get TASK_RUN_ID, SEQUENCE_NUMBER, START_WORD, END_WORD, and MOVE_TIME
+query = "
+SELECT 	API_TASK_RUN_ID,
+		SEQUENCE_NUMBER,
+		START_WORD,
+		T_WORD.WORD AS END_WORD,
+		MOVE_TIME
+FROM
+	(SELECT T_TASK_RUN.API_TASK_RUN_ID,
+			T_MOVE.SEQUENCE_NUMBER,
+			T_WORD.WORD AS START_WORD,
+			T_EDGE.END_WORD_ID,
+			T_MOVE.MOVE_TIME
+	FROM 
+		T_MOVE
+	LEFT OUTER JOIN
+		T_TASK_RUN
+	ON T_TASK_RUN.ID = T_MOVE.TASK_RUN_ID
+	LEFT OUTER JOIN
+		T_EDGE
+	ON T_MOVE.EDGE_ID = T_EDGE.ID
+	LEFT OUTER JOIN
+		T_WORD
+	ON T_EDGE.START_WORD_ID = T_WORD.ID)
+LEFT OUTER JOIN
+	T_WORD
+ON END_WORD_ID = T_WORD.ID;
+"
+df_task_run_word = dbGetQuery(db_connection, query)
+
+# Convert word list to lower case
+df_task_run_word$START_WORD = sapply(df_task_run_word$START_WORD, tolower)
+df_task_run_word$END_WORD = sapply(df_task_run_word$END_WORD, tolower)
+
+# Convert to syntactically valid names
+df_task_run_word$START_WORD = sapply(df_task_run_word$START_WORD, make.names)
+df_task_run_word$END_WORD = sapply(df_task_run_word$END_WORD, make.names)
+
+rm(query)
+```
+
+```{r build_network}
+# Read Nelson CSV dataframe
+list_file$nelson_csv = '../../Data/Raw/Nelson_network.csv'
+list_raw_data$nelson = read.csv(list_file$nelson_csv, row.names=1)
+
+# Convert rownames as syntactically valid names
+row.names(list_raw_data$nelson) = make.names(rownames(list_raw_data$nelson))
+```
+
+```{r retrieve_words_mindpaths}
+# Get the whole word list from MindPaths
+query = "
+SELECT WORD FROM T_WORD;
+"
+df_word_list = dbGetQuery(db_connection, query)
+
+# Convert word list to lower case
+df_word_list = data.frame(apply(df_word_list, c(1, 2), tolower))
+
+# Remove duplicate words
+df_word_list = data.frame(unique(df_word_list))
+
+# Convert to syntactically valid names
+df_word_list = data.frame(apply(df_word_list, c(1, 2), make.names))
+
+rm(query)
+```
+
+```{r retrieve_edge_mindpaths}
+query = "
+SELECT 	EDGE_ID,
+	START_WORD,
+	WORD AS END_WORD
+FROM
+	(SELECT 	T_EDGE.ID AS EDGE_ID,
+			WORD AS START_WORD,
+			END_WORD_ID
+	FROM 
+		T_EDGE
+	LEFT OUTER JOIN
+		T_WORD
+	ON START_WORD_ID = T_WORD.ID)
+LEFT OUTER JOIN
+	T_WORD
+ON END_WORD_ID = T_WORD.ID;
+"
+df_edge_list = dbGetQuery(db_connection, query)
+
+# Convert word list to lower case
+df_edge_list = data.frame(apply(df_edge_list[, c(2,3)], c(1, 2), tolower))
+
+# Convert to syntactically valid names
+df_edge_list = data.frame(apply(df_edge_list, c(1, 2), make.names))
+
+rm(query)
+```
+
+```{r match_words}
+# Match MindPaths words with Nelson Norm Words
+matched_words = match(df_word_list$WORD, colnames(list_raw_data$nelson))
+
+# Subset Nelson Network to matched words
+list_network$nelson_weighted = as.matrix( list_raw_data$nelson[matched_words[is.finite(matched_words)], matched_words[is.finite(matched_words)]] )
+rownames(list_network$nelson_weighted) = gsub("\\.", "", rownames(list_network$nelson_weighted))
+
+# Convert to binary edge
+network_unmatched_edge = list_network$nelson_weighted > 0
+
+list_ig_network$nelson_weighted = graph_from_adjacency_matrix(list_network$nelson_weighted, weighted = TRUE)
+
+# Match edge list from MindPaths to the Subset Nelson Network
+tmp_adjacency_matrix = Reduce('|', lapply(1:dim(network_unmatched_edge)[1], 
+			     function(index, edge_list, network){
+				     edge_index = which(rownames(network)[index] == edge_list$START_WORD)
+				     network[index, match(edge_list[edge_index, ]$END_WORD, colnames(network))] = TRUE
+				     return(network)
+			     }, df_edge_list, network_unmatched_edge))
+# list_network$nelson_unweighted = network_unmatched_edge | tmp_adjacency_matrix
+# Note: Use Nelson network instead of the OR result
+list_network$nelson_unweighted = network_unmatched_edge 
+rm(network_unmatched_edge, matched_words, tmp_adjacency_matrix)
+```
+
+```{r match_task_run_statistic}
+# Match task_run from MindPaths to Subset Nelson Network
+df_task_run_statistic = df_task_run_statistic[is.finite(match(df_task_run_statistic$START_WORD, rownames(list_network$nelson_unweighted))), ]
+df_task_run_statistic = df_task_run_statistic[is.finite(match(df_task_run_statistic$END_WORD, rownames(list_network$nelson_unweighted))), ]
+```
+
+```{r match_task_run_word}
+df_task_run_word = df_task_run_word[is.finite(match(df_task_run_word$API_TASK_RUN_ID, df_task_run_statistic$API_TASK_RUN_ID)), ]
+df_task_run_word = df_task_run_word[is.finite(match(df_task_run_word$API_TASK_RUN_ID, df_task_run_statistic$API_TASK_RUN_ID)), ]
+
+df_task_run_word = df_task_run_word[is.finite(match(df_task_run_word$START_WORD, rownames(list_network$nelson_unweighted))), ]
+df_task_run_word = df_task_run_word[is.finite(match(df_task_run_word$END_WORD, rownames(list_network$nelson_unweighted))), ]
+
+df_task_run_statistic = df_task_run_statistic[is.finite(match(df_task_run_statistic$API_TASK_RUN_ID, unique(df_task_run_word$API_TASK_RUN_ID))), ]
+
+df_task_run_word = df_task_run_word[is.finite(match(df_task_run_word$API_TASK_RUN_ID, df_task_run_statistic$API_TASK_RUN_ID)), ]
+df_task_run_word = df_task_run_word[is.finite(match(df_task_run_word$API_TASK_RUN_ID, df_task_run_statistic$API_TASK_RUN_ID)), ]
+```
+
+```{r calculate_optimal_solution}
+# Add geodesic distance based on Nelson network to df_task_run_statistic
+list_ig_network$nelson_unweighted = graph_from_adjacency_matrix(list_network$nelson_unweighted) 
+df_task_run_statistic$OPTIMAL_SOLUTION = apply(df_task_run_statistic, 1,
+						function(task, network){
+							return(length(shortest_paths(network, task[[4]], task[[5]] )$vpath[[1]]) - 1)
+						}, list_ig_network$nelson_unweighted) 
+```
+
+```{r find_unmatched_edges}
+# index_of_unmatched_edge = which(network != network_unmatched_edge)
+# tmp_row = rownames(network)[index_of_unmatched_edge %% nrow(network)]
+# tmp_col = colnames(network)[1 + floor(index_of_unmatched_edge/nrow(network))]
+# unmatched_edge = data.frame(tmp_row, tmp_col)
+```
+
+```{r filter_games_with_invalid_moves}
+# Load unmatched_edge RData
+load('../../RData/UnmatchedEdge.RData')
+
+# Filter out games that have gaps in the move sequence (From filtering out df_task_run_word previously)
+tmp = data.frame(table(df_task_run_word$API_TASK_RUN_ID))
+tmp$Var1 = as.integer(as.character(tmp$Var1))
+df_task_run_statistic = df_task_run_statistic[which( (tmp[match(df_task_run_statistic$API_TASK_RUN_ID, tmp$Var1), ])$Freq == df_task_run_statistic$NUMBER_OF_STEPS ), ]
+rm(tmp)
+
+# Filter out games that contain moves in unmatched_edge 
+index_game_containing_invalid_edges = unlist( apply(unmatched_edge, 1, function( edge, task_run_moves ){
+						     return( task_run_moves[ which((task_run_moves$START_WORD == edge[[1]]) & (task_run_moves$END_WORD == edge[[2]])), ]$API_TASK_RUN_ID )
+						}, df_task_run_word) )
+
+for ( game in index_game_containing_invalid_edges ) {
+	df_task_run_word = subset(df_task_run_word, API_TASK_RUN_ID != game) 
+	df_task_run_statistic = subset(df_task_run_statistic, API_TASK_RUN_ID != game)
+}
+
+df_task_run_word = df_task_run_word[is.finite(match(df_task_run_word$API_TASK_RUN_ID, df_task_run_statistic$API_TASK_RUN_ID)), ]
+df_task_run_word = df_task_run_word[is.finite(match(df_task_run_word$API_TASK_RUN_ID, df_task_run_statistic$API_TASK_RUN_ID)), ]
+
+df_task_run_word = df_task_run_word[is.finite(match(df_task_run_word$START_WORD, rownames(list_network$nelson_unweighted))), ]
+df_task_run_word = df_task_run_word[is.finite(match(df_task_run_word$END_WORD, rownames(list_network$nelson_unweighted))), ]
+
+df_task_run_statistic = df_task_run_statistic[is.finite(match(df_task_run_statistic$API_TASK_RUN_ID, unique(df_task_run_word$API_TASK_RUN_ID))), ]
+
+df_task_run_word = df_task_run_word[is.finite(match(df_task_run_word$API_TASK_RUN_ID, df_task_run_statistic$API_TASK_RUN_ID)), ]
+df_task_run_word = df_task_run_word[is.finite(match(df_task_run_word$API_TASK_RUN_ID, df_task_run_statistic$API_TASK_RUN_ID)), ]
+
+rm(game)
+rm(index_game_containing_invalid_edges)
+```
+
+```{r save_RData}
+save(list = ls(), file = '../../RData/NIPS/NIPS.RData')
+```

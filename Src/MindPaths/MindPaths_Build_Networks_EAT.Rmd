@@ -1,0 +1,107 @@
+---
+title: "MindPaths_Build_Networks_EAT"
+author: "Mohammad Isyroqi Fathan"
+date: "October 6, 2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r library, include = FALSE}
+## Include/Use libraries
+library(dplyr)
+library(igraph)
+library(ggplot2)
+library(ggtern)
+library(truncnorm)
+library(wordnet)
+library(RSQLite)
+library(parallel)
+library(rPython)
+library(expm)
+library(entropy)
+```
+
+```{r define_variables}
+list_file = list()
+list_raw_data = list()
+list_norm = list()
+list_network = list()
+list_ig_network = list()
+```
+
+```{r load_RData}
+load('../../RData/NIPS/NIPS.RData')
+```
+
+```{r multicore_setup}
+no_of_cores = detectCores()
+```
+
+```{r open_db, include = FALSE}
+# Name of SQLite database file
+list_file$db_file = "../../Data/Processed/MindPaths/MindPaths_v1.db"
+
+# Connect to SQLite database file
+db_connection = dbConnect(RSQLite::SQLite(), dbname = list_file$db_file)
+print("Database opened\n")
+```
+
+```{r load_WordData_Narrower_Terms}
+# Load WordData files
+list_file$eat_word_list = '../../Data/Processed/Pajek/EAT/EATnew/word_list.csv'
+list_file$eat_network = '../../Data/Processed/Pajek/EAT/EATnew/EAT.csv'
+
+list_raw_data$eat_word_list = read.csv(list_file$eat_word_list, header = FALSE)
+list_raw_data$eat_network = read.csv(list_file$eat_network, header = FALSE)
+
+colnames(list_raw_data$eat_word_list) = c("WORD_ID", "WORD")
+list_raw_data$eat_word_list$WORD = sapply(list_raw_data$eat_word_list$WORD, as.character)
+list_raw_data$eat_word_list$WORD = tolower(list_raw_data$eat_word_list$WORD)
+
+# list_raw_data$wn_word_list$WORD = gsub("#", "", list_raw_data$wn_word_list$WORD)
+# Fix some close words
+list_raw_data$eat_word_list[which(list_raw_data$eat_word_list$WORD == "aluminium"), ]$WORD = "aluminum"
+list_raw_data$eat_word_list[which(list_raw_data$eat_word_list$WORD == "diapers"), ]$WORD = "diaper"
+list_raw_data$eat_word_list[which(list_raw_data$eat_word_list$WORD == "ear-rings"), ]$WORD = "earring"
+list_raw_data$eat_word_list[which(list_raw_data$eat_word_list$WORD == "hallowe&#39;en"), ]$WORD = "halloween"
+list_raw_data$eat_word_list[which(list_raw_data$eat_word_list$WORD == "humour"), ]$WORD = "humor"
+list_raw_data$eat_word_list[which(list_raw_data$eat_word_list$WORD == "labour"), ]$WORD = "labor"
+list_raw_data$eat_word_list[which(list_raw_data$eat_word_list$WORD == "odour"), ]$WORD = "odor"
+list_raw_data$eat_word_list[which(list_raw_data$eat_word_list$WORD == "room-mate"), ]$WORD = "roommate"
+list_raw_data$eat_word_list[which(list_raw_data$eat_word_list$WORD == "saviour"), ]$WORD = "savior"
+```
+
+```{r subset_WordData to network}
+# Subset WordNet WordList to network
+list_raw_data$eat_word_list = list_raw_data$eat_word_list[which(list_raw_data$eat_word_list$WORD %in% rownames(list_network$nelson_unweighted)), ]
+```
+
+```{r function}
+BuildEATNetNetwork <- function(wordlist, edge_data, wordlist_match){
+	tmp_matrix = matrix(0, length(wordlist_match), length(wordlist_match))
+	colnames(tmp_matrix) = wordlist_match
+	rownames(tmp_matrix) = wordlist_match
+	for (i in 1:nrow(edge_data)) {
+		word_start = which(rownames(tmp_matrix) == (wordlist[which(wordlist$WORD_ID == edge_data[i, 1]), ]$WORD))
+		word_end = which(colnames(tmp_matrix) == (wordlist[which(wordlist$WORD_ID == edge_data[i, 2]), ]$WORD))
+		tmp_matrix[word_start, word_end] = tmp_matrix[word_start, word_end] + edge_data[i, 3]
+	}
+	return(tmp_matrix)
+}
+```
+
+```{r build }
+#Build Network
+list_network$eat_network_weighted = BuildEATNetNetwork(list_raw_data$eat_word_list, list_raw_data$eat_network, rownames(list_network$nelson_unweighted))
+list_network$eat_network_unweighted = list_network$eat_network_weighted > 0
+
+list_ig_network$eat_network_weighted = graph_from_adjacency_matrix(list_network$eat_network_weighted, weighted = TRUE)
+list_ig_network$eat_network = graph_from_adjacency_matrix(list_network$eat_network_unweighted)
+```
+
+```{r save_RData}
+save(list = ls(), file = '../../RData/NIPS/NIPS.RData')
+```

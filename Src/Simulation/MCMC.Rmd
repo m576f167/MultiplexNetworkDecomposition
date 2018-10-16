@@ -1,0 +1,356 @@
+---
+title: "MindPaths_Simulation"
+author: "Mohammad Isyroqi Fathan"
+date: "October 6, 2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r library, include = FALSE}
+## Include/Use libraries
+library(coda)
+library(dplyr)
+library(reshape)
+library(igraph)
+library(ggplot2)
+library(ggtern)
+library(truncnorm)
+library(RSQLite)
+library(parallel)
+library(rPython)
+library(expm)
+library(entropy)
+library(boot)
+```
+
+```{r load_data}
+load('../../../RData/NIPS/NIPS_Simulation.RData')
+```
+
+```{r Functions}
+CalculateAggregatedMultiplexAdjacencyMatrix <- function(networks, weights){
+  return(Reduce("+", mapply(function(network, weight){
+      return(weight * network)
+    }, networks, weights, SIMPLIFY = FALSE))
+  )
+}
+
+CalculateProbabilityMatrix <- function(adjacency_matrix_aggregate){
+  # Probability_i_j = Value_i_j/sum_per_row 
+  row_normalizing_constant = 1/apply(adjacency_matrix_aggregate, 1, sum)
+  row_normalizing_constant[which(is.infinite(row_normalizing_constant))] <- 0
+  return(adjacency_matrix_aggregate * row_normalizing_constant)
+}
+##============================================================================================================================
+### Trace Generation
+GenerateTrace <- function(probability_matrix, starting_node, path_length){
+  path_trace = list(starting_node)
+  for (i in 1:path_length){
+    # Traverse one node from current node
+    path_trace[[i+1]] = sample(1:dim(probability_matrix)[1], size = 1, prob = probability_matrix[path_trace[[i]], ])
+  }
+  return(path_trace)
+}
+
+## To Do: Fix and optimize how to get Transition Matrix (Problem is how to do pass by reference)
+CalculateTraceMatrix <- function(traces, number_of_nodes){
+  # # For every trace in traces, create trace_matrix. Then Reduce with "+".
+  # Reduce("+", lapply(traces, function(path_trace){
+  #   # Create trace_matrix per trace
+  #   trace_matrix = matrix(0, number_of_nodes, number_of_nodes)
+  #   for (i in 1:(length(path_trace) - 1)){
+  #     trace_matrix[path_trace[[i]], path_trace[[i + 1]]] = trace_matrix[path_trace[[i]], path_trace[[i + 1]]] + 1
+  #   }
+  #   return(trace_matrix)
+  # }))
+  trace_matrix = matrix(0, number_of_nodes, number_of_nodes)
+  for (i in 1:length(traces)){
+    for(j in 1:(length(traces[[i]]) - 1)){
+      trace_matrix[traces[[i]][[j]], traces[[i]][[j + 1]]] = trace_matrix[traces[[i]][[j]], traces[[i]][[j + 1]]] + 1
+    }
+  }
+  return(trace_matrix)
+}
+
+GenerateTraceForRandomNNode <- function(probability_matrix, path_length, number_of_nodes, probability_starting_node = NULL){
+  return(lapply(1:number_of_nodes, function(i, probability_matrix, path_length, probability_starting_node){
+            # Initialize starting_node to NULL
+            starting_node = NULL
+            if (is.null(probability_starting_node)) {
+              # Sampling starting_node from uniform distribution
+              starting_node = sample(1:dim(probability_matrix)[1], 1)
+            }
+            else {
+              # Sampling starting_node from probability_starting_node distribution
+              starting_node = sample(1:dim(probability_matrix)[1], 1, prob = probability_starting_node)
+            }
+            GenerateTrace(probability_matrix, starting_node, path_length)
+         }, probability_matrix, path_length, probability_starting_node))
+}
+##============================================================================================================================
+CalculateLogLikelihood <- function(weight_vector, adjacency_matrix_vector, traces_vector, degree_matrix_vector){
+	log_adjacency_matrix = log(adjacency_matrix_vector %*% weight_vector)
+	log_adjacency_matrix[which(is.infinite(log_adjacency_matrix))] <- 0
+	log_degree_matrix = log(degree_matrix_vector %*% weight_vector)
+	log_degree_matrix[which(is.infinite(log_degree_matrix))] <- 0
+	# return(sum(traces_vector * (log(adjacency_matrix_vector %*% weight_vector) - log(degree_matrix_vector %*% weight_vector))))
+	return(sum(traces_vector * (log_adjacency_matrix - log_degree_matrix)))
+}
+
+#### Markov Chain Monte Carlo
+MCMC <- function(adjacency_matrix, traces, number_of_sample, starting_point, standard_deviation, epsilon = 1e-2, num_of_sample_width = 30, proposal_distribution = NULL, is_log = TRUE){
+	tmp = is_log
+	# Convert Adjacency Matrix list to (nxn) x number of layer matrix. Also Compute degree matrix converted to same dimension matrix
+	adjacency_matrix_vector = sapply(adjacency_matrix, as.numeric)
+	degree_matrix_vector = lapply(adjacency_matrix, function(x){t(apply(x, c(1), function(x){rep(sum(x), length(x))}))})
+	degree_matrix_vector = sapply(degree_matrix_vector, as.numeric)
+	traces_vector = as.numeric(traces)
+
+	# Subset data to traces data that exist
+	adjacency_matrix_vector = adjacency_matrix_vector[ which(traces_vector > 0), ]
+	degree_matrix_vector = degree_matrix_vector[which(traces_vector > 0), ]
+	traces_vector = traces_vector[ which(traces_vector > 0) ]
+  # Account for the case if number_of_layers <= 1
+  number_of_layers = max(2, length(starting_point))
+  
+  # Account for number_of_sample <= 1
+  number_of_sample = max(2, number_of_sample)
+  
+  # Initialize result_dataframe
+  result_dataframe = data.frame(matrix(starting_point, 1, number_of_layers))
+  result_dataframe$value = CalculateLogLikelihood(starting_point, adjacency_matrix_vector, traces_vector, degree_matrix_vector)
+
+  i = 1
+  if (i <= num_of_sample_width){
+	  is_not_converged = TRUE
+  }
+  else{
+# 	  fixed_check_subset = sample_list[(i - num_of_sample_width):(i)]
+# 	  tmp = apply(sapply(fixed_check_subset, function(x){x}), c(1), sd)
+# 	  tmp = sapply(tmp, function(x, standard_deviation, epsilon){return((abs(x) >= abs(standard_deviation - epsilon)) & (abs(x) <= abs(standard_deviation + epsilon)))}, standard_deviation, epsilon)
+# 	  tmp = Reduce("&", tmp)
+# 	  is_not_converged = !tmp
+  }
+  
+  while ((i <= number_of_sample - 1) & (is_not_converged)) {
+    # Initialize sum_of_weight
+    sum_of_weight = 0
+          
+    # Initialize new_point to last
+    new_point = as.numeric(result_dataframe[dim(result_dataframe)[1], 1:number_of_layers])
+    
+    # Sample acceptance_probability(u) from uniform distribution
+    acceptance_probability = runif(1, 0, 1)
+      
+    for (j in 1:(number_of_layers - 1)) {
+      
+      # Sample new_point_j
+      if (is.null(proposal_distribution)) {
+        # Use truncated normal distribution
+        new_point[j] = rtruncnorm(1, 0, 1 - sum_of_weight, new_point[j], sd = standard_deviation)
+      }
+      else {
+        # Use proposal_distribution
+        new_point[j] = sample(seq(0, 1 - sum_of_weight, 1/length(proposal_distribution)), 1, prob = proposal_distribution)
+      }
+      
+      # Update sum_of_weight
+      sum_of_weight = sum(new_point[1:j])
+    }
+    
+    # Account for the case if number_of_layers <= 1
+    if (!is.na(new_point[number_of_layers])) {
+      new_point[number_of_layers] = 1 - sum_of_weight
+    }
+    
+    # Calculate new Log-Likelihood
+    new_log_likelihood = CalculateLogLikelihood(new_point, adjacency_matrix_vector, traces_vector, degree_matrix_vector)
+    old_log_likelihood = result_dataframe[dim(result_dataframe)[1], dim(result_dataframe)[2]]
+    
+    # Check acceptance criteria (Currently use e^(- (diff of negative_log_likelihood)). Note: should we use e^(-(cost_diff)) or just (new_cost/old_cost)
+    if (acceptance_probability < min(1, exp((new_log_likelihood - old_log_likelihood)))) {
+      result_dataframe = rbind(result_dataframe, c(new_point, new_log_likelihood))
+    }
+    else {
+      result_dataframe = rbind(result_dataframe, result_dataframe[dim(result_dataframe)[1], ])
+    }
+
+    i = i + 1
+	  if (i <= num_of_sample_width){
+		  is_not_converged = TRUE
+	  }
+	  else{
+# 		  fixed_check_subset = sample_list[(i - num_of_sample_width):(i)]
+# 		  tmp = apply(sapply(fixed_check_subset, function(x){x}), c(1), sd)
+# 		  tmp = sapply(tmp, function(x, standard_deviation, epsilon){return((abs(x) >= abs(standard_deviation - epsilon)) & (abs(x) <= abs(standard_deviation + epsilon)))}, standard_deviation, epsilon)
+# 		  tmp = Reduce("&", tmp)
+# 		  is_not_converged = !tmp
+	  }
+  }
+  result_dataframe$iteration = 1:dim(result_dataframe)[1]
+  return(result_dataframe)
+}
+```
+
+
+```{r list_simulation}
+list_simulation_1 = list()
+```
+
+```{r simulation_1}
+# Simulate synthetic data unweighted
+# Define Variables
+list_simulation_1$parameter = list()
+list_simulation_1$parameter$network_density_probability = c(0.01, 0.0008, 0.01)
+list_simulation_1$parameter$n = 1972
+# list_simulation_1$parameter$network_weights = c(0.2, 0.3, 0.5)
+list_simulation_1$parameter$network_weights = c(0.63, 0.11, 0.26)
+#list_simulation_1$parameter$network_weights = c(0.18, 0.37, 0.45)
+list_simulation_1$parameter$number_of_traces = 1000
+
+# ER Network
+# Generate Network
+list_simulation_1$ER = list()
+list_simulation_1$ER$network = lapply(list_simulation_1$parameter$network_density_probability, erdos.renyi.game, n = list_simulation_1$parameter$n, type = c("gnp", "gnm"), directed = TRUE, loops = FALSE)
+list_simulation_1$ER$network = lapply(list_simulation_1$ER$network, as_adjacency_matrix, sparse = FALSE)
+
+# Generate Multiplex Network
+list_simulation_1$ER$Aggregate = CalculateAggregatedMultiplexAdjacencyMatrix(list_simulation_1$ER$network, list_simulation_1$parameter$network_weights)
+
+# Calculate Probability Matrix
+list_simulation_1$ER$Probability = CalculateProbabilityMatrix(list_simulation_1$ER$Aggregate)
+
+# Generate Random Traces
+list_simulation_1$ER$traces = GenerateTraceForRandomNNode(list_simulation_1$ER$Probability, 25, list_simulation_1$parameter$number_of_traces)
+
+# Generate Trace Matrix
+list_simulation_1$ER$traces_matrix = CalculateTraceMatrix(list_simulation_1$ER$traces, list_simulation_1$parameter$n)
+
+# Regular Network
+# Generate Network
+list_simulation_1$Regular = list()
+list_simulation_1$Regular$network = lapply(list_simulation_1$parameter$network_density_probability * list_simulation_1$parameter$n, sample_k_regular, no.of.nodes = list_simulation_1$parameter$n, directed = TRUE, multiple = FALSE)
+list_simulation_1$Regular$network = lapply(list_simulation_1$Regular$network, as_adjacency_matrix, sparse = FALSE)
+
+# Generate Multiplex Network
+list_simulation_1$Regular$Aggregate = CalculateAggregatedMultiplexAdjacencyMatrix(list_simulation_1$Regular$network, list_simulation_1$parameter$network_weights)
+
+# Calculate Probability Matrix
+list_simulation_1$Regular$Probability = CalculateProbabilityMatrix(list_simulation_1$Regular$Aggregate)
+
+# Generate Random Traces
+list_simulation_1$Regular$traces = GenerateTraceForRandomNNode(list_simulation_1$Regular$Probability, 25, list_simulation_1$parameter$number_of_traces)
+
+# Generate Trace Matrix
+list_simulation_1$Regular$traces_matrix = CalculateTraceMatrix(list_simulation_1$Regular$traces, list_simulation_1$parameter$n)
+
+# Configuration Model Network
+# Generate Network
+tmp = list()
+tmp$network = list(list_network$eat_network_unweighted > 0,
+		   list_network$wn_combined_unweighted > 0,
+		   list_network$smallworld_R1 > 0)
+tmp$out_degree = lapply(tmp$network, function(x){apply(x, c(1), function(x){sum(x > 0)})})
+tmp$in_degree = lapply(tmp$network, function(x){apply(x, c(2), function(x){sum(x > 0)})})
+list_simulation_1$Configuration = list()
+list_simulation_1$Configuration$network = lapply(1:length(list_simulation_1$parameter$network_density_probability),
+						 function(index, out_degree, in_degree){
+							 sample_degseq(out_degree[[index]], in_degree[[index]])
+						 }, tmp$out_degree, tmp$in_degree)
+list_simulation_1$Configuration$network = lapply(list_simulation_1$Configuration$network, as_adjacency_matrix, sparse = FALSE)
+
+# Generate Multiplex Network
+list_simulation_1$Configuration$Aggregate = CalculateAggregatedMultiplexAdjacencyMatrix(list_simulation_1$Configuration$network, list_simulation_1$parameter$network_weights)
+
+# Calculate Probability Matrix
+list_simulation_1$Configuration$Probability = CalculateProbabilityMatrix(list_simulation_1$Configuration$Aggregate)
+
+# Generate Random Traces
+list_simulation_1$Configuration$traces = GenerateTraceForRandomNNode(list_simulation_1$Configuration$Probability, 25, list_simulation_1$parameter$number_of_traces)
+
+# Generate Trace Matrix
+list_simulation_1$Configuration$traces_matrix = CalculateTraceMatrix(list_simulation_1$Configuration$traces, list_simulation_1$parameter$n)
+rm(tmp)
+```
+
+```{r noise_test}
+TestNoise <- function(list_network, traces_matrix, starting_point, noise_level, epsilon, number_of_sample, standard_deviation){
+	list_network = lapply(1:length(list_network),
+			      function(index, list_network, noise_level){
+				      network = list_network[[index]]
+				      noise = noise_level[[index]]
+				      mean_degree = mean(apply(network, c(1), function(x){sum(x > 0)}))
+				      network = apply(network, c(1),
+						      function(node, noise, mean_degree){
+							      num_of_nodes = length(node)
+							      node_degree = sum(node > 0)
+							      if (node_degree == 0){
+								      node_degree = mean_degree
+							      }
+							      noise = node_degree * noise
+							      return( sapply(node,
+									     function(x, noise, num_of_nodes){
+										     flip = sample(c(TRUE, FALSE), 1, prob = c(noise, num_of_nodes - noise))
+										     if (flip){
+											     return(1 - x)
+										     }
+										     else{
+											     return(x)
+										     }
+									     }, noise, num_of_nodes))
+						      }, noise, mean_degree)
+				      return(network)
+			      }, list_network, noise_level)
+	print("Finished generating noised networks")
+	return(MCMC(list_network, traces_matrix, number_of_sample, starting_point, standard_deviation = standard_deviation, epsilon = epsilon))
+}
+```
+
+```{r run_test_noise}
+starting_point = runif(3)
+starting_point = starting_point/sum(starting_point)
+test_noise_result = mclapply(mc.cores = 24, seq(0, 0.1, 0.1/100),
+			     function(noise_level, list_simulation, num_of_samples, starting_point, standard_deviation, epsilon){
+				     return(TestNoise(list_simulation$network, list_simulation$traces_matrix, starting_point, rep(noise_level, length(list_simulation$network)),
+						      epsilon, num_of_samples, standard_deviation))
+			     }, list_simulation_1$ER, 6000, starting_point, 0.0015, 1e-1)
+```
+
+```{r process_test_noise}
+test_noise_result_removed_burn_in = lapply(test_noise_result,
+					   function(result){
+						   result[1000:dim(result)[1], ]
+					   })
+test_noise_mean = lapply(test_noise_result_removed_burn_in,
+			 function(result){
+				 apply(result[, c("X1", "X2", "X3")], c(2), mean)
+			 })
+```
+
+```{r analyze}
+starting_point = runif(3)
+starting_point = starting_point/sum(starting_point)
+test_result = MCMC(list_simulation_1$ER$network, list_simulation_1$ER$traces_matrix, 6000, starting_point , standard_deviation = 0.0015, epsilon = 1e-1, num_of_sample_width = 50)
+heidel.diag(test_result[, 1:3])
+
+```
+
+```{r MindPaths_Simulation_Data}
+starting_point = runif(3)
+starting_point = starting_point / sum(starting_point)
+list_MCMC_result = list()
+list_MCMC_result[[1]] = MCMC(list_simulation_1$ER$network, list_simulation_1$ER$traces_matrix, 1000, starting_point, standard_deviation = 0.0015, epsilon = 1e-4, num_of_sample_width = 50)
+list_MCMC_result[[2]] = MCMC(list_simulation_2$ER$network, list_simulation_2$ER$traces_matrix, 1000, starting_point, standard_deviation = 0.0015, epsilon = 1e-4, num_of_sample_width = 50)
+starting_point = runif(4)
+starting_point = starting_point / sum(starting_point)
+list_MCMC_result[[3]] = MCMC(list_simulation_3$network, list_simulation_3$traces_matrix, 1000, starting_point, standard_deviation = 0.0015, epsilon = 1e-4, num_of_sample_width = 50)
+list_MCMC_result[[4]] = MCMC(list_simulation_4$network, list_simulation_4$traces_matrix, 1000, starting_point, standard_deviation = 0.0015, epsilon = 1e-4, num_of_sample_width = 50)
+list_MCMC_result[[5]] = MCMC(list_simulation_5$network, list_simulation_5$traces_matrix, 1000, starting_point, standard_deviation = 0.0015, epsilon = 1e-4, num_of_sample_width = 50)
+```
+
+```{r save data}
+save(list = ls(), file = 'RData/MCMC.RData')
+```

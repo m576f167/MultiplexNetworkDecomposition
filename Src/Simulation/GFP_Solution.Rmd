@@ -1,0 +1,518 @@
+---
+title: "MindPaths_Simulation"
+author: "Mohammad Isyroqi Fathan"
+date: "October 6, 2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r library, include = FALSE}
+## Include/Use libraries
+library(dplyr)
+library(reshape)
+library(igraph)
+library(ggplot2)
+library(ggtern)
+library(truncnorm)
+library(wordnet)
+library(RSQLite)
+library(parallel)
+library(rPython)
+library(expm)
+library(entropy)
+library(boot)
+```
+
+```{r load_data}
+load('../../../RData/NIPS/NIPS_Simulation.RData')
+```
+
+```{r Functions}
+CalculateAggregatedMultiplexAdjacencyMatrix <- function(networks, weights){
+  return(Reduce("+", mapply(function(network, weight){
+      return(weight * network)
+    }, networks, weights, SIMPLIFY = FALSE))
+  )
+}
+
+CalculateProbabilityMatrix <- function(adjacency_matrix_aggregate){
+  # Probability_i_j = Value_i_j/sum_per_row 
+  row_normalizing_constant = 1/apply(adjacency_matrix_aggregate, 1, sum)
+  row_normalizing_constant[which(is.infinite(row_normalizing_constant))] <- 0
+  return(adjacency_matrix_aggregate * row_normalizing_constant)
+}
+##============================================================================================================================
+### Trace Generation
+GenerateTrace <- function(probability_matrix, starting_node, path_length){
+  path_trace = list(starting_node)
+  for (i in 1:path_length){
+    # Traverse one node from current node
+    path_trace[[i+1]] = sample(1:dim(probability_matrix)[1], size = 1, prob = probability_matrix[path_trace[[i]], ])
+  }
+  return(path_trace)
+}
+
+## To Do: Fix and optimize how to get Transition Matrix (Problem is how to do pass by reference)
+CalculateTraceMatrix <- function(traces, number_of_nodes){
+  # # For every trace in traces, create trace_matrix. Then Reduce with "+".
+  # Reduce("+", lapply(traces, function(path_trace){
+  #   # Create trace_matrix per trace
+  #   trace_matrix = matrix(0, number_of_nodes, number_of_nodes)
+  #   for (i in 1:(length(path_trace) - 1)){
+  #     trace_matrix[path_trace[[i]], path_trace[[i + 1]]] = trace_matrix[path_trace[[i]], path_trace[[i + 1]]] + 1
+  #   }
+  #   return(trace_matrix)
+  # }))
+  trace_matrix = matrix(0, number_of_nodes, number_of_nodes)
+  for (i in 1:length(traces)){
+    for(j in 1:(length(traces[[i]]) - 1)){
+      trace_matrix[traces[[i]][[j]], traces[[i]][[j + 1]]] = trace_matrix[traces[[i]][[j]], traces[[i]][[j + 1]]] + 1
+    }
+  }
+  return(trace_matrix)
+}
+
+GenerateTraceForRandomNNode <- function(probability_matrix, path_length, number_of_nodes, probability_starting_node = NULL){
+  return(lapply(1:number_of_nodes, function(i, probability_matrix, path_length, probability_starting_node){
+            # Initialize starting_node to NULL
+            starting_node = NULL
+            if (is.null(probability_starting_node)) {
+              # Sampling starting_node from uniform distribution
+              starting_node = sample(1:dim(probability_matrix)[1], 1)
+            }
+            else {
+              # Sampling starting_node from probability_starting_node distribution
+              starting_node = sample(1:dim(probability_matrix)[1], 1, prob = probability_starting_node)
+            }
+            GenerateTrace(probability_matrix, starting_node, path_length)
+         }, probability_matrix, path_length, probability_starting_node))
+}
+##============================================================================================================================
+```
+
+
+```{r list_simulation}
+list_simulation_1 = list()
+```
+
+```{r simulation_1}
+# Simulate synthetic data unweighted
+# Define Variables
+list_simulation_1$parameter = list()
+list_simulation_1$parameter$network_density_probability = c(0.01, 0.0008, 0.01)
+list_simulation_1$parameter$n = 1972
+# list_simulation_1$parameter$network_weights = c(0.2, 0.3, 0.5)
+list_simulation_1$parameter$network_weights = c(0.63, 0.11, 0.26)
+#list_simulation_1$parameter$network_weights = c(0.18, 0.37, 0.45)
+list_simulation_1$parameter$number_of_traces = 1000
+
+# ER Network
+# Generate Network
+list_simulation_1$ER = list()
+list_simulation_1$ER$network = lapply(list_simulation_1$parameter$network_density_probability, erdos.renyi.game, n = list_simulation_1$parameter$n, type = c("gnp", "gnm"), directed = TRUE, loops = FALSE)
+list_simulation_1$ER$network = lapply(list_simulation_1$ER$network, as_adjacency_matrix, sparse = FALSE)
+
+# Generate Multiplex Network
+list_simulation_1$ER$Aggregate = CalculateAggregatedMultiplexAdjacencyMatrix(list_simulation_1$ER$network, list_simulation_1$parameter$network_weights)
+
+# Calculate Probability Matrix
+list_simulation_1$ER$Probability = CalculateProbabilityMatrix(list_simulation_1$ER$Aggregate)
+
+# Generate Random Traces
+list_simulation_1$ER$traces = GenerateTraceForRandomNNode(list_simulation_1$ER$Probability, 25, list_simulation_1$parameter$number_of_traces)
+
+# Generate Trace Matrix
+list_simulation_1$ER$traces_matrix = CalculateTraceMatrix(list_simulation_1$ER$traces, list_simulation_1$parameter$n)
+
+# Regular Network
+# Generate Network
+list_simulation_1$Regular = list()
+list_simulation_1$Regular$network = lapply(list_simulation_1$parameter$network_density_probability * list_simulation_1$parameter$n, sample_k_regular, no.of.nodes = list_simulation_1$parameter$n, directed = TRUE, multiple = FALSE)
+list_simulation_1$Regular$network = lapply(list_simulation_1$Regular$network, as_adjacency_matrix, sparse = FALSE)
+
+# Generate Multiplex Network
+list_simulation_1$Regular$Aggregate = CalculateAggregatedMultiplexAdjacencyMatrix(list_simulation_1$Regular$network, list_simulation_1$parameter$network_weights)
+
+# Calculate Probability Matrix
+list_simulation_1$Regular$Probability = CalculateProbabilityMatrix(list_simulation_1$Regular$Aggregate)
+
+# Generate Random Traces
+list_simulation_1$Regular$traces = GenerateTraceForRandomNNode(list_simulation_1$Regular$Probability, 25, list_simulation_1$parameter$number_of_traces)
+
+# Generate Trace Matrix
+list_simulation_1$Regular$traces_matrix = CalculateTraceMatrix(list_simulation_1$Regular$traces, list_simulation_1$parameter$n)
+
+# Configuration Model Network
+# Generate Network
+tmp = list()
+tmp$network = list(list_network$eat_network_unweighted > 0,
+		   list_network$wn_combined_unweighted > 0,
+		   list_network$smallworld_R1 > 0)
+tmp$out_degree = lapply(tmp$network, function(x){apply(x, c(1), function(x){sum(x > 0)})})
+tmp$in_degree = lapply(tmp$network, function(x){apply(x, c(2), function(x){sum(x > 0)})})
+list_simulation_1$Configuration = list()
+list_simulation_1$Configuration$network = lapply(1:length(list_simulation_1$parameter$network_density_probability),
+						 function(index, out_degree, in_degree){
+							 sample_degseq(out_degree[[index]], in_degree[[index]])
+						 }, tmp$out_degree, tmp$in_degree)
+list_simulation_1$Configuration$network = lapply(list_simulation_1$Configuration$network, as_adjacency_matrix, sparse = FALSE)
+
+# Generate Multiplex Network
+list_simulation_1$Configuration$Aggregate = CalculateAggregatedMultiplexAdjacencyMatrix(list_simulation_1$Configuration$network, list_simulation_1$parameter$network_weights)
+
+# Calculate Probability Matrix
+list_simulation_1$Configuration$Probability = CalculateProbabilityMatrix(list_simulation_1$Configuration$Aggregate)
+
+# Generate Random Traces
+list_simulation_1$Configuration$traces = GenerateTraceForRandomNNode(list_simulation_1$Configuration$Probability, 25, list_simulation_1$parameter$number_of_traces)
+
+# Generate Trace Matrix
+list_simulation_1$Configuration$traces_matrix = CalculateTraceMatrix(list_simulation_1$Configuration$traces, list_simulation_1$parameter$n)
+rm(tmp)
+```
+
+```{r GFP_Solution}
+CalculateFunctionValue <- function(adjacency_matrix_vector, degree_matrix_vector, traces_vector, weight_vector){
+	numerator = log(adjacency_matrix_vector %*% weight_vector)
+	numerator[which(is.infinite(numerator))] <- 0
+	denominator = log(degree_matrix_vector %*% weight_vector)
+	denominator[which(is.infinite(denominator))] <- 0
+	return(sum((traces_vector)*(numerator - denominator)))
+	#return(sum((traces_vector)*(adjacency_matrix_vector %*% weight_vector)/(degree_matrix_vector %*% weight_vector)))
+}
+
+UB <- function(adjacency_matrix_vector, degree_matrix_vector, traces_vector, H){
+	# Find Xi_l, Xi_u, eta_l, and eta_u (note: Here 0 <= x <= 1 and a_j is either 0 or 1. So, x_l and x_u are the points where these are lowest and largest)
+	x_l = H[, 1]
+	x_u = H[, 2]
+	Xi_l = adjacency_matrix_vector %*% x_l
+	Xi_u = adjacency_matrix_vector %*% x_u
+	eta_l = degree_matrix_vector %*% x_l
+	eta_u = degree_matrix_vector %*% x_u
+
+	tmp_log_Xi_l = log(Xi_l)
+	tmp_log_Xi_l[which(is.infinite(tmp_log_Xi_l))] = 0
+	tmp_log_Xi_u = log(Xi_u)
+	tmp_log_Xi_u[which(is.infinite(tmp_log_Xi_u))] = 0
+	tmp_log_eta_l = log(eta_l)
+	tmp_log_eta_l[which(is.infinite(tmp_log_eta_l))] = 0
+	tmp_log_eta_u = log(eta_u)
+	tmp_log_eta_u[which(is.infinite(tmp_log_eta_u))] = 0
+
+	# Find z_l and z_u. (note: Since, Xi_l, Xi_u, eta_l, and eta_u > 0, so z_l = ln(Xi_l/eta_u) and z_u = ln(Xi_u/eta_l))
+	z_l = tmp_log_Xi_l - tmp_log_eta_u
+	z_u = tmp_log_Xi_u - tmp_log_eta_l
+
+	# Find Y_l and Y_u and compute K, K_1, K_2
+	Y_l = sum(mapply(min, traces_vector * z_l, traces_vector * z_u))
+	Y_u = sum(mapply(max, traces_vector * z_l, traces_vector * z_u))
+	log_K = Y_u + log(1 - exp(Y_l - Y_u)) - log(Y_u - Y_l)
+	K_1 = as.numeric((tmp_log_Xi_u - tmp_log_Xi_l)/(Xi_u - Xi_l))
+	K_2 = as.numeric((tmp_log_eta_u - tmp_log_eta_l)/(eta_u - eta_l))
+
+	# Build RLP Objective Function (note: this is in form c^Tx, so the constants are thrown out. Also, only LF_1 is constructed since t_j > 0)
+	LF_1 = (traces_vector * ((K_1 * adjacency_matrix_vector) - (K_2 * degree_matrix_vector)))
+	LF_1 = apply(LF_1, c(2), sum)
+	A1 = diag(dim(adjacency_matrix_vector)[2])
+	b1 = x_u
+	A2 = diag(dim(adjacency_matrix_vector)[2])
+	b2 = x_l
+	A3 = matrix(rep(1, dim(adjacency_matrix_vector)[2]), 1, dim(adjacency_matrix_vector)[2])
+	b3 = c(1)
+
+	# Solve RLP with simplex
+	result_RLP = simplex(LF_1, A1, b1, A2, b2, A3, b3, maxi = TRUE)
+
+	# Calculate Actual Objective Function value
+	tmp_result = traces_vector * ((K_1 * (adjacency_matrix_vector %*% result_RLP$soln)) - 1 - (log(K_1)) - (K_2 * ((degree_matrix_vector %*% result_RLP$soln) - eta_l)) - (tmp_log_eta_l)) - Y_l
+	tmp_result = sum(tmp_result)
+	tmp_result_exp_log_trick = (Y_l - (log_K + log(tmp_result)))
+	tmp_result_exp_log_trick = exp(tmp_result_exp_log_trick)
+	result_value = log_K + log(tmp_result) + log(1 + tmp_result_exp_log_trick)
+
+	# Return result
+	list_result = list()
+	list_result$result = result_RLP
+	list_result$result_point = result_RLP$soln
+	list_result$result_value = result_value
+	list_result$x_l = x_l
+	list_result$x_u = x_u
+	list_result$Xi_l = Xi_l
+	list_result$Xi_u = Xi_u
+	list_result$eta_l = eta_l
+	list_result$eta_u = eta_u
+	list_result$z_l = z_l
+	list_result$z_u = z_u
+	list_result$Y_l = Y_l
+	list_result$Y_u = Y_u
+	list_result$log_K = log_K
+	list_result$K_1 = K_1
+	list_result$K_2 = K_2
+	list_result$LF_1 = LF_1
+
+	return(list_result)
+}
+
+BranchAndBound <- function(adjacency_matrix, traces, initial_bound_delta = 1e-10, epsilon = NULL, max_iteration = 1000){
+	# Initialize variables
+	H_0 = t(matrix(c(initial_bound_delta, 1-initial_bound_delta), 2, length(adjacency_matrix)))
+	if (is.null(epsilon)){
+		epsilon = 1e-5
+	}
+	epsilon = abs(sum(traces) * dim(adjacency_matrix[[1]])[1] * log(1 - epsilon))
+
+	# Convert Adjacency Matrix list to (nxn) x number of layer matrix. Also Compute degree matrix converted to same dimension matrix
+	adjacency_matrix_vector = sapply(adjacency_matrix, as.numeric)
+	degree_matrix_vector = lapply(adjacency_matrix, function(x){t(apply(x, c(1), function(x){rep(sum(x), length(x))}))})
+	degree_matrix_vector = sapply(degree_matrix_vector, as.numeric)
+	traces_vector = as.numeric(traces)
+
+	# Subset data to traces data that exist
+	adjacency_matrix_vector = adjacency_matrix_vector[ which(traces_vector > 0), ]
+	degree_matrix_vector = degree_matrix_vector[which(traces_vector > 0), ]
+	traces_vector = traces_vector[ which(traces_vector > 0) ]
+	
+	k = 1
+	list_Q = list(list(H_0))
+	list_results = list()
+	list_points = list()
+	list_UB = list()
+	list_LB = list()
+	list_x = list()
+
+	list_return = list()
+
+	# Find x_0 given H_0
+	list_results[[k]] = list(UB(adjacency_matrix_vector, degree_matrix_vector, traces_vector, H_0))
+	list_points[[k]] = list(list_results[[k]][[1]]$result_point)
+	list_UB[[k]] = list(list_results[[k]][[1]]$result_value)
+	list_x[[k]] = list_results[[k]][[1]]$result_point
+	list_LB[[k]] = CalculateFunctionValue(adjacency_matrix_vector, degree_matrix_vector, traces_vector, list_x[[k]])
+
+	if (abs(list_UB[[k]][[1]] - list_LB[[1]]) <= epsilon){
+		list_return$list_results = list_results
+		list_return$list_points = list_points
+		list_return$list_UB = list_UB
+		list_return$list_LB = list_LB
+		list_return$list_x = list_x
+		return(list_return)
+	}
+
+	H_k_index = which(unlist(list_UB[[k]]) == max(unlist(list_UB[[k]])))
+
+	while((k < max_iteration) & (abs(list_UB[[k]][[H_k_index]] - list_LB[[k]]) > epsilon)){
+		k = k + 1
+		print(k)
+		list_LB[[k]] = list_LB[[k - 1]]
+		list_x[[k]] = list_x[[k - 1]]
+
+		# Split H into H_1 and H_2
+		H_1 = list_Q[[k - 1]][[H_k_index]]
+		H_2 = list_Q[[k - 1]][[H_k_index]]
+		max_bound_width_index = apply(H_1, c(1), function(x){x[2] - x[1]})
+		max_bound_width_index = which(max_bound_width_index == max(max_bound_width_index))[1]
+		H_1[max_bound_width_index, ] = c(H_1[max_bound_width_index, 1],
+						 (1/2)*sum(H_1[max_bound_width_index, ]))
+		H_2[max_bound_width_index, ] = c((1/2)*sum(H_2[max_bound_width_index, ]),
+						 H_2[max_bound_width_index, 2])
+
+		# Delete H_k-1
+		list_Q[[k]] = list_Q[[k - 1]]
+		list_results[[k]] = list_results[[k - 1]]
+		list_points[[k]] = list_points[[k - 1]]
+		list_UB[[k]] = list_UB[[k - 1]]
+
+		list_Q[[k]][[H_k_index]] = NULL
+		list_results[[k]][[H_k_index]] = NULL
+		list_points[[k]][[H_k_index]] = NULL
+		list_UB[[k]][[H_k_index]] = NULL
+
+		# Compute and check linear constraint
+		H_1_LB = NULL
+		H_2_LB = NULL
+		if ((sum(H_1[, 1]) <= 1) & ( -sum(H_1[, 2]) <= -1)){
+			H_1_results = UB(adjacency_matrix_vector, degree_matrix_vector, traces_vector, H_1)
+			H_1_points = H_1_results$result_point
+			H_1_UB = H_1_results$result_value
+			H_1_LB = CalculateFunctionValue(adjacency_matrix_vector, degree_matrix_vector, traces_vector, H_1_points)
+		}
+		if ((sum(H_2[, 1]) <= 1) & (-sum(H_2[, 2]) <= -1)){
+			H_2_results = UB(adjacency_matrix_vector, degree_matrix_vector, traces_vector, H_2)
+			H_2_points = H_2_results$result_point
+			H_2_UB = H_2_results$result_value
+			H_2_LB = CalculateFunctionValue(adjacency_matrix_vector, degree_matrix_vector, traces_vector, H_2_points)
+		}
+		if (!is.null(H_1_LB)){
+			if (H_1_LB > list_LB[[k]]){
+				list_LB[[k]] = H_1_LB
+				list_x[[k]] = H_1_points
+			}
+		}
+		if (!is.null(H_2_LB)){
+			if (H_2_LB > list_LB[[k]]){
+				list_LB[[k]] = H_2_LB
+				list_x[[k]] = H_2_points
+			}
+		}
+
+		# Put H_t that are higher than list_LB[[k]]
+		if (!is.null(H_1_LB)){
+			if (H_1_UB > list_LB[[k]]){
+				list_Q[[k]][[length(list_Q[[k]]) + 1]] = H_1
+				list_results[[k]][[length(list_results[[k]]) + 1]] = H_1_results
+				list_points[[k]][[length(list_points[[k]]) + 1]] = H_1_points
+				list_UB[[k]][[length(list_UB[[k]]) + 1]] = H_1_UB
+			}
+		}
+		if (!is.null(H_2_LB)){
+			if (H_2_UB > list_LB[[k]]){
+				list_Q[[k]][[length(list_Q[[k]]) + 1]] = H_2
+				list_results[[k]][[length(list_results[[k]]) + 1]] = H_2_results
+				list_points[[k]][[length(list_points[[k]]) + 1]] = H_2_points
+				list_UB[[k]][[length(list_UB[[k]]) + 1]] = H_2_UB
+			}
+		}
+
+		# Remove un-improving region H in list_Q[[k]]
+		list_to_be_deleted = c()
+		for (i  in 1:length(list_Q[[k]])){
+			if (list_UB[[k]][[i]] <= list_LB[[k]]){
+				list_to_be_deleted = c(list_to_be_deleted, i)
+			}
+		}
+		list_Q[[k]][list_to_be_deleted] = NULL
+		list_results[[k]][list_to_be_deleted] = NULL
+		list_points[[k]][list_to_be_deleted] = NULL
+		list_UB[[k]][list_to_be_deleted] = NULL
+
+		# Find new H_k
+		H_k_index = which(unlist(list_UB[[k]]) == max(unlist(list_UB[[k]])))[1]
+	}
+
+	list_return$list_results = list_results
+	list_return$list_points = list_points
+	list_return$list_UB = list_UB
+	list_return$list_LB = list_LB
+	list_return$list_x = list_x
+	list_return$list_Q = list_Q
+	return(list_return)
+}
+```
+
+```{r convert_as_dataframe}
+ConvertToDataframe <- function(list_points, list_objective){
+	result_dataframe = Reduce(rbind, mapply(function(point, likelihood){
+		result = data.frame(t(point))
+		result$value = likelihood
+		return(result)
+	 }, list_points, list_objective, SIMPLIFY = FALSE))
+	return(result_dataframe)
+}
+
+FindMaxUB_k <- function(list_UB){
+	return(sapply(list_UB, function(x){return(max(unlist(x)))}))
+}
+```
+
+```{r noise_test}
+TestNoise <- function(list_network, traces_matrix, starting_point, noise_level, epsilon, initial_bound_delta, max_iteration){
+	list_network = lapply(1:length(list_network),
+			      function(index, list_network, noise_level){
+				      network = list_network[[index]]
+				      noise = noise_level[[index]]
+				      mean_degree = mean(apply(network, c(1), function(x){sum(x > 0)}))
+				      network = apply(network, c(1),
+						      function(node, noise, mean_degree){
+							      num_of_nodes = length(node)
+							      node_degree = sum(node > 0)
+							      if (node_degree == 0){
+								      node_degree = mean_degree
+							      }
+							      noise = node_degree * noise
+							      return( sapply(node,
+									     function(x, noise, num_of_nodes){
+										     flip = sample(c(TRUE, FALSE), 1, prob = c(noise, num_of_nodes - noise))
+										     if (flip){
+											     return(1 - x)
+										     }
+										     else{
+											     return(x)
+										     }
+									     }, noise, num_of_nodes))
+						      }, noise, mean_degree)
+				      return(network)
+			      }, list_network, noise_level)
+	print("Finished generating noised networks")
+	return(BranchAndBound(list_network, traces_matrix, initial_bound_delta = initial_bound_delta, epsilon = epsilon, max_iteration = max_iteration))
+}
+```
+
+```{r coba_new_algorithm}
+test_result = BranchAndBound(list_simulation_1$ER$network, list_simulation_1$ER$traces_matrix, initial_bound_delta = 1e-5, epsilon = 1e-4, max_iteration = 1000)
+df = ConvertToDataframe(test_result$list_x, test_result$list_LB)
+list_max_UB = FindMaxUB_k(test_result$list_UB)
+```
+
+```{r MindPaths_Simulation_Data}
+list_GFP_result = list()
+list_GFP_result[[1]] = BranchAndBound(list_simulation_1$ER$network, list_simulation_1$ER$traces_matrix, initial_bound_delta = 1e-5, epsilon = 1e-4, max_iteration = 500)
+list_GFP_result[[2]] = BranchAndBound(list_simulation_2$ER$network, list_simulation_2$ER$traces_matrix, initial_bound_delta = 1e-5, epsilon = 1e-4, max_iteration = 500)
+list_GFP_result[[3]] = BranchAndBound(list_simulation_3$network, list_simulation_3$traces_matrix, initial_bound_delta = 1e-5, epsilon = 1e-4, max_iteration = 500)
+list_GFP_result[[4]] = BranchAndBound(list_simulation_4$network, list_simulation_4$traces_matrix, initial_bound_delta = 1e-5, epsilon = 1e-4, max_iteration = 500)
+list_GFP_result[[5]] = BranchAndBound(list_simulation_5$network, list_simulation_5$traces_matrix, initial_bound_delta = 1e-5, epsilon = 1e-4, max_iteration = 500)
+
+list_GFP_df = list()
+list_GFP_df[[1]] = ConvertToDataframe(list_GFP_result[[1]]$list_x, list_GFP_result[[1]]$list_LB)
+list_GFP_df[[2]] = ConvertToDataframe(list_GFP_result[[2]]$list_x, list_GFP_result[[2]]$list_LB)
+list_GFP_df[[3]] = ConvertToDataframe(list_GFP_result[[3]]$list_x, list_GFP_result[[3]]$list_LB)
+list_GFP_df[[4]] = ConvertToDataframe(list_GFP_result[[4]]$list_x, list_GFP_result[[4]]$list_LB)
+list_GFP_df[[5]] = ConvertToDataframe(list_GFP_result[[5]]$list_x, list_GFP_result[[5]]$list_LB)
+
+list_GFP_max_UB = list()
+list_GFP_max_UB[[1]] = FindMaxUB_k(list_GFP_result[[1]]$list_UB)
+list_GFP_max_UB[[2]] = FindMaxUB_k(list_GFP_result[[2]]$list_UB)
+list_GFP_max_UB[[3]] = FindMaxUB_k(list_GFP_result[[3]]$list_UB)
+list_GFP_max_UB[[4]] = FindMaxUB_k(list_GFP_result[[4]]$list_UB)
+list_GFP_max_UB[[5]] = FindMaxUB_k(list_GFP_result[[5]]$list_UB)
+```
+
+```{r save_data}
+save(list = ls(), file = 'RData/GFP.RData')
+```
+
+#==================================================================================
+```{r brute_force}
+BruteForceAnyar <- function(adjacency_matrix, degree_matrix, traces, likelihood_function, number_of_points = 100){
+	result = mclapply(mc.cores = detectCores() - 1, seq(0, 1, 1/number_of_points), function(weight_1, likelihood_function, adjacency_matrix, traces, degree_matrix){
+		  print(weight_1)
+		  lapply(seq(0, 1 - weight_1, 1/number_of_points), function(weight_2, weight_1, likelihood_function, adjacency_matrix, traces, degree_matrix){
+				 list(c(weight_1, weight_2, 1 - (weight_1 + weight_2)), likelihood_function(adjacency_matrix, degree_matrix, traces, c(weight_1, weight_2, 1 - (weight_1 + weight_2))))
+			    }, weight_1, likelihood_function, adjacency_matrix, traces, degree_matrix)
+  }, likelihood_function, adjacency_matrix, traces, degree_matrix)
+	df = data.frame()
+	alpha = 1/number_of_points
+	for (i in 1:length(result)){
+		for (j in 1:length(result[[i]])){
+			df = rbind(df, data.frame(w1 = result[[i]][[j]][[1]][[1]],
+						  w2 = result[[i]][[j]][[1]][[2]],
+						  w3 = result[[i]][[j]][[1]][[3]],
+						  likelihood = result[[i]][[j]][[2]]))
+		}
+	}
+	return(df)
+}
+# Convert Adjacency Matrix list to (nxn) x number of layer matrix. Also Compute degree matrix converted to same dimension matrix
+adjacency_matrix_vector = sapply(list_simulation_1$ER$network, as.numeric)
+degree_matrix_vector = lapply(list_simulation_1$ER$network, function(x){t(apply(x, c(1), function(x){rep(sum(x), length(x))}))})
+degree_matrix_vector = sapply(degree_matrix_vector, as.numeric)
+traces_vector = as.numeric(list_simulation_1$ER$traces_matrix)
+
+# Subset data to traces data that exist
+adjacency_matrix_vector = adjacency_matrix_vector[ which(traces_vector > 0), ]
+degree_matrix_vector = degree_matrix_vector[which(traces_vector > 0), ]
+traces_vector = traces_vector[ which(traces_vector > 0) ]
+sweep_result = BruteForceAnyar(adjacency_matrix_vector, degree_matrix_vector, traces_vector, CalculateFunctionValue, 20)
+```

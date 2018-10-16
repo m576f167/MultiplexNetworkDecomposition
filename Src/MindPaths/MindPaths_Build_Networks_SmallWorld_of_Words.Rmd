@@ -1,0 +1,91 @@
+---
+title: "MindPaths_Build_Networks_EAT"
+author: "Mohammad Isyroqi Fathan"
+date: "October 6, 2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r library, include = FALSE}
+## Include/Use libraries
+library(dplyr)
+library(igraph)
+library(ggplot2)
+library(ggtern)
+library(truncnorm)
+library(wordnet)
+library(RSQLite)
+library(parallel)
+library(rPython)
+library(expm)
+library(entropy)
+```
+
+```{r define_variables}
+list_file = list()
+list_raw_data = list()
+list_norm = list()
+list_network = list()
+list_ig_network = list()
+```
+
+```{r load_RData}
+load('../../RData/NIPS/NIPS.RData')
+```
+
+```{r multicore_setup}
+no_of_cores = detectCores()
+```
+
+```{r open_db, include = FALSE}
+# Name of SQLite database file
+list_file$db_file = "../../Data/Processed/MindPaths/MindPaths_v1.db"
+
+# Connect to SQLite database file
+db_connection = dbConnect(RSQLite::SQLite(), dbname = list_file$db_file)
+print("Database opened\n")
+```
+
+```{r load_SmallWorld_of_Words}
+# Load SmallWorld files
+list_file$smallworld_R1 = '../../Data/Processed/Small World of Words/strength.SWOW-EN.R1.csv'
+list_file$smallworld_R123 = '../../Data/Processed/Small World of Words/strength.SWOW-EN.R123.csv'
+
+list_raw_data$smallworld_R1 = read.csv(list_file$smallworld_R1, header = TRUE)
+list_raw_data$smallworld_R123 = read.csv(list_file$smallworld_R123, header = TRUE)
+
+list_raw_data$smallworld_R1$cue = tolower(sapply(list_raw_data$smallworld_R1$cue, as.character))
+list_raw_data$smallworld_R1$response = tolower(sapply(list_raw_data$smallworld_R1$response, as.character))
+list_raw_data$smallworld_R123$cue = tolower(sapply(list_raw_data$smallworld_R123$cue, as.character))
+list_raw_data$smallworld_R123$response = tolower(sapply(list_raw_data$smallworld_R123$response, as.character))
+```
+
+```{r subset_WordData to network}
+# Subset SmallWorld WordList to network
+list_raw_data$smallworld_R1 = list_raw_data$smallworld_R1[which((list_raw_data$smallworld_R1$cue %in% rownames(list_network$nelson_unweighted)) & (list_raw_data$smallworld_R1$response %in% rownames(list_network$nelson_unweighted))), ]
+list_raw_data$smallworld_R123 = list_raw_data$smallworld_R123[which((list_raw_data$smallworld_R123$cue %in% rownames(list_network$nelson_unweighted)) & (list_raw_data$smallworld_R123$response %in% rownames(list_network$nelson_unweighted))), ]
+```
+
+```{r build}
+list_network$smallworld_R1 = matrix(0, nrow(list_network$nelson_unweighted), ncol(list_network$nelson_unweighted))
+rownames(list_network$smallworld_R1) = rownames(list_network$nelson_unweighted)
+colnames(list_network$smallworld_R1) = colnames(list_network$nelson_unweighted)
+for (i in 1:nrow(list_raw_data$smallworld_R1)){
+	list_network$smallworld_R1[list_raw_data$smallworld_R1$cue[i], list_raw_data$smallworld_R1$response[i]] = list_network$smallworld_R1[list_raw_data$smallworld_R1$cue[i], list_raw_data$smallworld_R1$response[i]] + 1
+}
+
+list_network$smallworld_R123 = matrix(0, nrow(list_network$nelson_unweighted), ncol(list_network$nelson_unweighted))
+rownames(list_network$smallworld_R123) = rownames(list_network$nelson_unweighted)
+colnames(list_network$smallworld_R123) = colnames(list_network$nelson_unweighted)
+for (i in 1:nrow(list_raw_data$smallworld_R123)){
+	list_network$smallworld_R123[list_raw_data$smallworld_R123$cue[i], list_raw_data$smallworld_R123$response[i]] = list_network$smallworld_R123[list_raw_data$smallworld_R123$cue[i], list_raw_data$smallworld_R123$response[i]] + 1
+}
+rm(i)
+```
+
+```{r save_RData}
+save(list = ls(), file = '../../RData/NIPS/NIPS.RData')
+```

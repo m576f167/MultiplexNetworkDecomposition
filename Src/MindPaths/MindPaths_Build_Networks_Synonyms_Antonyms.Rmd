@@ -1,0 +1,187 @@
+---
+title: "MindPaths_Build_Networks_Synonyms_Antonyms"
+author: "Mohammad Isyroqi Fathan"
+date: "October 6, 2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r library, include = FALSE}
+## Include/Use libraries
+library(dplyr)
+library(igraph)
+library(ggplot2)
+library(ggtern)
+library(truncnorm)
+library(wordnet)
+library(RSQLite)
+library(parallel)
+library(rPython)
+library(expm)
+library(entropy)
+```
+
+```{r define_variables}
+list_file = list()
+list_raw_data = list()
+list_norm = list()
+list_network = list()
+list_ig_network = list()
+```
+
+```{r load_RData}
+load('../../RData/NIPS/NIPS.RData')
+```
+
+```{r multicore_setup}
+no_of_cores = detectCores()
+```
+
+```{r open_db, include = FALSE}
+# Name of SQLite database file
+list_file$db_file = "../../Data/Processed/MindPaths/MindPaths_v1.db"
+
+# Connect to SQLite database file
+db_connection = dbConnect(RSQLite::SQLite(), dbname = list_file$db_file)
+print("Database opened\n")
+```
+
+```{r load_WordData_Synonyms_Antonyms}
+# Load WordData Synonyms
+list_file$worddata_synonyms = '../../Data/Processed/WordData/Synonyms.csv'
+list_raw_data$worddata_synonyms = read.csv(list_file$worddata_synonyms, header = FALSE)
+
+# Load WordData Antonyms
+list_file$worddata_antonyms = '../../Data/Processed/WordData/Antonyms.csv'
+list_raw_data$worddata_antonyms = read.csv(list_file$worddata_antonyms, header = FALSE)
+```
+
+```{r subset_WordData to network}
+# Subset WordData Synonyms to network
+list_raw_data$worddata_synonyms = list_raw_data$worddata_synonyms[match(rownames(list_network$nelson_unweighted), rownames(list_raw_data$nelson)), ]
+
+# Convert to string
+list_raw_data$worddata_synonyms = data.frame(sapply(list_raw_data$worddata_synonyms, as.character), stringsAsFactors = FALSE)
+
+# Subset WordData Antonyms to network
+list_raw_data$worddata_antonyms = list_raw_data$worddata_antonyms[match(rownames(list_network$nelson_unweighted), rownames(list_raw_data$nelson)), ]
+
+# Convert to string
+list_raw_data$worddata_antonyms = data.frame(sapply(list_raw_data$worddata_antonyms, as.character), stringsAsFactors = FALSE)
+```
+
+```{r build }
+# Create Synonyms network
+synonyms_norm_list = mclapply(mc.cores = floor(no_of_cores/2), 1:nrow(list_raw_data$worddata_synonyms), function(x, worddata, word_list){
+				      matched_index = match( worddata[x, ], word_list )
+				      # Whole result is NA
+				      if (sum(!is.na(matched_index)) == 0 ) {
+					      return(NULL)
+				      }
+				      return(matched_index[!is.na(matched_index)])
+						}, list_raw_data$worddata_synonyms, rownames(list_network$nelson_unweighted))
+list_network$synonyms = matrix(0, nrow(list_network$nelson_unweighted), nrow(list_network$nelson_unweighted))
+for (i in 1:length(synonyms_norm_list)) {
+	if (!is.null(synonyms_norm_list)) {
+		for (j in 1:length(synonyms_norm_list[[i]])) {
+			list_network$synonyms[ i, synonyms_norm_list[[i]][[j]] ] = list_network$synonyms[ i, synonyms_norm_list[[i]][[j]] ] + 1
+		}
+	}
+}
+
+# Create synonyms network iGraph
+list_ig_network$synonyms = graph_from_adjacency_matrix(list_network$synonyms)
+
+# Create Antonyms network
+antonyms_norm_list = mclapply(mc.cores = floor(no_of_cores/2), 1:nrow(list_raw_data$worddata_antonyms), function(x, worddata, word_list){
+				      matched_index = match( worddata[x, ], word_list )
+				      # Whole result is NA
+				      if (sum(!is.na(matched_index)) == 0 ) {
+					      return(NULL)
+				      }
+				      return(matched_index[!is.na(matched_index)])
+						}, list_raw_data$worddata_antonyms, rownames(list_network$nelson_unweighted))
+list_network$antonyms = matrix(0, nrow(list_network$nelson_unweighted), nrow(list_network$nelson_unweighted))
+for (i in 1:length(antonyms_norm_list)) {
+	if (!is.null(antonyms_norm_list)) {
+		for (j in 1:length(antonyms_norm_list[[i]])) {
+			list_network$antonyms[ i, antonyms_norm_list[[i]][[j]] ] = list_network$antonyms[ i, antonyms_norm_list[[i]][[j]] ] + 1
+		}
+	}
+}
+
+# Create synonyms network iGraph
+list_ig_network$antonyms = graph_from_adjacency_matrix(list_network$antonyms)
+
+# Remove i and j variables
+rm(i, j, synonyms_norm_list, antonyms_norm_list)
+```
+
+```{r build_wordnet_network}
+BuildWordNetNetworkDirectRelation = function(wordnet_data){
+	norm_list = mclapply(mc.cores = no_of_cores, 1:nrow(wordnet_data), function(index, wordnet_data){
+				matched_index = match(wordnet_data[index, ], rownames(wordnet_data))
+				# Whole result is NA
+				if (sum(!is.na(matched_index)) == 0) {
+					return(NULL)
+				}
+				return(matched_index[!is.na(matched_index)])
+			}, wordnet_data)
+
+	network_matrix = matrix(0, nrow(wordnet_data), nrow(wordnet_data))
+	for (i in 1:length(norm_list)) {
+		if (!is.null(norm_list)) {
+			for (j in 1:length(norm_list[[i]])) {
+				network_matrix[i, norm_list[[i]][[j]]] = network_matrix[i, norm_list[[i]][[j]]] + 1
+			}
+		}
+	}
+
+	return(network_matrix)
+}
+
+list_file$wordnet_synonyms = '../../Data/Processed/WordNet/synonyms.csv'
+list_file$wordnet_antonyms = '../../Data/Processed/WordNet/antonyms.csv'
+
+list_raw_data$wordnet_synonyms = read.csv(list_file$wordnet_synonyms, header = FALSE, stringsAsFactors = FALSE)
+list_raw_data$wordnet_antonyms = read.csv(list_file$wordnet_antonyms, header = FALSE, stringsAsFactors = FALSE)
+
+list_raw_data$wordnet_synonyms = data.frame(apply(list_raw_data$wordnet_synonyms, c(1,2), tolower), stringsAsFactors = FALSE)
+list_raw_data$wordnet_antonyms = data.frame(apply(list_raw_data$wordnet_antonyms, c(1,2), tolower), stringsAsFactors = FALSE)
+
+list_raw_data$wordnet_synonyms = data.frame(apply(list_raw_data$wordnet_synonyms, c(1,2), trimws), stringsAsFactors = FALSE)
+list_raw_data$wordnet_antonyms = data.frame(apply(list_raw_data$wordnet_antonyms, c(1,2), trimws), stringsAsFactors = FALSE)
+
+rownames(list_raw_data$wordnet_synonyms) = list_raw_data$wordnet_synonyms[, 1]
+rownames(list_raw_data$wordnet_antonyms) = list_raw_data$wordnet_antonyms[, 1]
+
+list_raw_data$wordnet_synonyms = list_raw_data$wordnet_synonyms[, -1]
+list_raw_data$wordnet_antonyms = list_raw_data$wordnet_antonyms[, -1]
+
+list_raw_data$wordnet_synonyms = list_raw_data$wordnet_synonyms[ match(rownames(list_network$nelson_unweighted), rownames(list_raw_data$wordnet_synonyms)) , ]
+list_raw_data$wordnet_antonyms = list_raw_data$wordnet_antonyms[ match(rownames(list_network$nelson_unweighted), rownames(list_raw_data$wordnet_antonyms)) , ]
+
+list_network$wordnet_synonyms = BuildWordNetNetworkDirectRelation(list_raw_data$wordnet_synonyms)
+list_network$wordnet_antonyms = BuildWordNetNetworkDirectRelation(list_raw_data$wordnet_antonyms)
+
+list_ig_network$wordnet_synonyms = graph_from_adjacency_matrix(list_network$wordnet_synonyms, weighted = TRUE)
+list_ig_network$wordnet_antonyms = graph_from_adjacency_matrix(list_network$wordnet_antonyms, weighted = TRUE)
+
+list_network$synonyms_combined = list_network$wordnet_synonyms + list_network$synonyms
+list_ig_network$synonyms_combined = graph_from_adjacency_matrix(list_network$wordnet_synonyms, weighted = TRUE)
+
+list_network$antonyms_combined = list_network$wordnet_antonyms + list_network$antonyms
+list_ig_network$antonyms_combined = graph_from_adjacency_matrix(list_network$wordnet_antonyms, weighted = TRUE)
+```
+
+```{r antonym_synonyms}
+list_network$antonyms_synonyms_unweighted = ((list_network$synonyms_combined > 0) | (list_network$antonyms_combined > 0))
+list_ig_network$antonyms_synonyms_unweighted = graph_from_adjacency_matrix(list_network$antonyms_synonyms_unweighted)
+```
+
+```{r save_RData}
+save(list = ls(), file = '../../RData/NIPS/NIPS.RData')
+```
