@@ -91,6 +91,29 @@ GenerateTraceForRandomNNode <- function(probability_matrix, path_length, number_
          }, probability_matrix, path_length, probability_starting_node))
 }
 ##============================================================================================================================
+InduceNoiseNetwork <- function(list_network, noise_level){
+	list_network = lapply(1:length(list_network),
+			      function(index, list_network, noise_level){
+				      network = list_network[[index]]
+				      noise = noise_level[[index]]
+				      mean_degree = mean(apply(network, c(1), function(x){sum(x > 0)}))
+				      network = apply(network, c(1),
+						      function(node, noise, mean_degree){
+							      num_of_nodes = length(node)
+							      node_degree = sum(node > 0)
+							      if (node_degree == 0){
+								      node_degree = mean_degree
+							      }
+							      noise = node_degree * noise
+							      mask_flip = sample(c(TRUE, FALSE), length(node), replace = TRUE, prob = c(noise, num_of_nodes - noise))
+							      node[mask_flip] = 1 - node[mask_flip]
+							      return(node)
+						      }, noise, mean_degree)
+				      return(t(network))
+			      }, list_network, noise_level)
+	return(list_network)
+}
+##============================================================================================================================
 ```
 
 
@@ -419,35 +442,27 @@ FindMaxUB_k <- function(list_UB){
 
 ```{r noise_test}
 TestNoise <- function(list_network, traces_matrix, starting_point, noise_level, epsilon, initial_bound_delta, max_iteration){
-	list_network = lapply(1:length(list_network),
-			      function(index, list_network, noise_level){
-				      network = list_network[[index]]
-				      noise = noise_level[[index]]
-				      mean_degree = mean(apply(network, c(1), function(x){sum(x > 0)}))
-				      network = apply(network, c(1),
-						      function(node, noise, mean_degree){
-							      num_of_nodes = length(node)
-							      node_degree = sum(node > 0)
-							      if (node_degree == 0){
-								      node_degree = mean_degree
-							      }
-							      noise = node_degree * noise
-							      return( sapply(node,
-									     function(x, noise, num_of_nodes){
-										     flip = sample(c(TRUE, FALSE), 1, prob = c(noise, num_of_nodes - noise))
-										     if (flip){
-											     return(1 - x)
-										     }
-										     else{
-											     return(x)
-										     }
-									     }, noise, num_of_nodes))
-						      }, noise, mean_degree)
-				      return(network)
-			      }, list_network, noise_level)
-	print("Finished generating noised networks")
+	list_network = InduceNoiseNetwork(list_network, noise_level)
 	return(BranchAndBound(list_network, traces_matrix, initial_bound_delta = initial_bound_delta, epsilon = epsilon, max_iteration = max_iteration))
 }
+```
+
+```{r run_test_noise}
+no_of_cores = detectCores()
+starting_point = runif(3)
+starting_point = starting_point/sum(starting_point)
+test_noise_result = mclapply(mc.cores = no_of_cores, seq(0, 0.1, 0.1/100),
+			     function(noise_level, list_simulation, starting_point, epsilon, initial_bound_delta, max_iteration){
+				     return(TestNoise(list_simulation$network, list_simulation$traces_matrix, starting_point, rep(noise_level, length(list_simulation$network)),
+						      epsilon, initial_bound_delta, max_iteration))
+			     }, list_simulation_1$ER, starting_point, 1e-4, 1e-5, 1000)
+```
+
+```{r process_test_noise}
+test_noise_max = lapply(test_noise_result,
+			 function(result){
+				 result[dim(result)[1], ]
+			 })
 ```
 
 ```{r coba_new_algorithm}
