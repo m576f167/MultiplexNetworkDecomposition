@@ -279,7 +279,7 @@ UB <- function(adjacency_matrix_vector, degree_matrix_vector, traces_vector, H){
 	return(list_result)
 }
 
-BranchAndBound <- function(adjacency_matrix, traces, initial_bound_delta = 1e-10, epsilon = NULL, max_iteration = 1000){
+BranchAndBound <- function(adjacency_matrix, traces, initial_bound_delta = 1e-10, epsilon = NULL, max_iteration = 1000, is_print_iteration = FALSE){
 	# Initialize variables
 	H_0 = t(matrix(c(initial_bound_delta, 1-initial_bound_delta), 2, length(adjacency_matrix)))
 	if (is.null(epsilon)){
@@ -328,7 +328,7 @@ BranchAndBound <- function(adjacency_matrix, traces, initial_bound_delta = 1e-10
 
 	while((k < max_iteration) & (abs(list_UB[[k]][[H_k_index]] - list_LB[[k]]) > epsilon)){
 		k = k + 1
-		print(k)
+		if (is_print_iteration) {print(k)}
 		list_LB[[k]] = list_LB[[k - 1]]
 		list_x[[k]] = list_x[[k - 1]]
 
@@ -441,30 +441,99 @@ FindMaxUB_k <- function(list_UB){
 ```
 
 ```{r noise_test}
-TestNoise <- function(list_network, traces_matrix, starting_point, noise_level, epsilon, initial_bound_delta, max_iteration){
+CheckParamKey <- function(list_param, key){
+	return(if (is.null(list_param[[key]])) {stop(paste("Missing parameter: ", key))} else {list_param[[key]]})
+}
+TestNoise <- function(noise_level, ...){
+	# Get Parameters
+	list_param = list(...)
+	list_network = CheckParamKey(list_param, "list_network")
+	traces_matrix = CheckParamKey(list_param, "traces_matrix")
+	initial_bound_delta = CheckParamKey(list_param, "initial_bound_delta")
+	epsilon = CheckParamKey(list_param, "epsilon")
+	max_iteration = CheckParamKey(list_param, "max_iteration")
+	
+	# Induce Noise and Compute
 	list_network = InduceNoiseNetwork(list_network, noise_level)
 	return(BranchAndBound(list_network, traces_matrix, initial_bound_delta = initial_bound_delta, epsilon = epsilon, max_iteration = max_iteration))
+}
+postProcessGFP <- function(result){
+	result = ConvertToDataframe(result$list_x, result$list_LB)
+	result = result[dim(result)[1], ]
+	return(result)
+}
+SweepNoiseLevel <- function(sequence_noise, postProcessFunction, no_of_cores, noise_sample, ...){
+	mclapply(mc.cores = no_of_cores, sequence_noise,
+			     function(noise_level_1, ...){
+				     return(
+					    lapply(sequence_noise,
+						   function(noise_level_2, noise_level_1, ...){
+							   return(
+								  lapply(sequence_noise,
+									 function(noise_level_3, noise_level_2, noise_level_1, ...){
+										 print(c(noise_level_1, noise_level_2, noise_level_3))
+										 result_sample = lapply(1:noise_sample,
+													function(x, noise_level_3, noise_level_2, noise_level_1, ...){
+														result = TestNoise(c(noise_level_1, noise_level_2, noise_level_3), ...)
+														result = postProcessFunction(result)
+														return(c(noise_level_1, noise_level_2, noise_level_3, result))
+													}, noise_level_3, noise_level_2, noise_level_1, ...)
+										 return (result_sample)
+									 }, noise_level_2, noise_level_1, ...)
+								  )
+						   }, noise_level_1, ...)
+					    )
+			     }, ...)
+}
+ConvertNoiseResultToMatrix <- function(result){
+	colnames_result = names(result[[1]][[1]][[1]][[1]])
+	result = matrix(unlist(result), ncol = length(result[[1]][[1]][[1]][[1]]), byrow = TRUE)
+	colnames(result) = colnames_result
+	colnames(result)[1:3] = c("noise_layer_1", "noise_layer_2", "noise_layer_3")
+	return(result)
+}
+runTestNoise <- function(sequence_noise, postProcessFunction, no_of_cores, noise_sample, ...){
+	starting_point = runif(3)
+	starting_point = starting_point/sum(starting_point)
+	start_time = Sys.time()
+	result = SweepNoiseLevel(sequence_noise, postProcessFunction, no_of_cores, noise_sample, starting_point = starting_point, ...)
+	finish_time = Sys.time()
+	print(finish_time - start_time)
+	result = ConvertNoiseResultToMatrix(result)
+	final_result = list()
+	final_result$sequence_noise = sequence_noise
+	final_result$noise_sample = noise_sample
+	final_result$starting_point = starting_point
+	final_result$start_time = start_time
+	final_result$finish_time = finish_time
+	final_result$result = result
+	return(final_result)
 }
 ```
 
 ```{r run_test_noise}
 no_of_cores = detectCores()
-starting_point = runif(3)
-starting_point = starting_point/sum(starting_point)
-test_noise_result = mclapply(mc.cores = no_of_cores, seq(0, 0.1, 0.1/100),
-			     function(noise_level, list_simulation, starting_point, epsilon, initial_bound_delta, max_iteration){
-				     return(TestNoise(list_simulation$network, list_simulation$traces_matrix, starting_point, rep(noise_level, length(list_simulation$network)),
-						      epsilon, initial_bound_delta, max_iteration))
-			     }, list_simulation_1$ER, starting_point, 1e-4, 1e-5, 1000)
+sequence_noise = seq(0, 1, 1/20)
+noise_sample = 1
+test_noise_result = runTestNoise(sequence_noise, postProcessGFP, no_of_cores, noise_sample,
+				 list_network = list_simulation_1$ER$network,
+				 traces_matrix = list_simulation_1$ER$traces_matrix,
+				 initial_bound_delta = 1e-5,
+				 epsilon = 1e-4,
+				 max_iteration = 1000)
 ```
 
-```{r process_test_noise}
-test_noise_max = lapply(test_noise_result,
-			 function(result){
-				 result[dim(result)[1], ]
-			 })
+```{r run_test_noise_multiple_samples}
+no_of_cores = detectCores()
+sequence_noise = seq(0, 1, 1/5)
+noise_sample = 10
+test_noise_result_multiple_samples = runTestNoise(sequence_noise, postProcessGFP, no_of_cores, noise_sample,
+						  list_network = list_simulation_1$ER$network,
+						  traces_matrix = list_simulation_1$ER$traces_matrix,
+						  initial_bound_delta = 1e-5,
+						  epsilon = 1e-4,
+						  max_iteration = 1000)
 ```
-
 ```{r coba_new_algorithm}
 test_result = BranchAndBound(list_simulation_1$ER$network, list_simulation_1$ER$traces_matrix, initial_bound_delta = 1e-5, epsilon = 1e-4, max_iteration = 1000)
 df = ConvertToDataframe(test_result$list_x, test_result$list_LB)
