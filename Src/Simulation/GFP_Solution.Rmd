@@ -91,7 +91,7 @@ GenerateTraceForRandomNNode <- function(probability_matrix, path_length, number_
          }, probability_matrix, path_length, probability_starting_node))
 }
 ##============================================================================================================================
-InduceNoiseNetwork <- function(list_network, noise_level){
+InduceNoiseNetwork <- function(list_network, noise_level, is_rewire = FALSE){
 	list_network = lapply(1:length(list_network),
 			      function(index, list_network, noise_level){
 				      network = list_network[[index]]
@@ -99,15 +99,33 @@ InduceNoiseNetwork <- function(list_network, noise_level){
 				      mean_degree = mean(apply(network, c(1), function(x){sum(x > 0)}))
 				      network = apply(network, c(1),
 						      function(node, noise, mean_degree){
-							      num_of_nodes = length(node)
-							      node_degree = sum(node > 0)
-							      if (node_degree == 0){
-								      node_degree = mean_degree
+							      if (is_rewire){
+								      num_of_nodes = length(node)
+								      node_degree = sum(node > 0)
+								      if (node_degree == 0){
+									      return(node)
+								      }
+								      index_edges = which(node > 0)
+								      noise = node_degree * noise
+								      mask_zero = sample(c(TRUE, FALSE), node_degree, replace = TRUE, prob = c(noise, node_degree - noise))
+								      total_zero = sum(mask_zero)
+								      node[index_edges[mask_zero]] = 0
+								      index_edges = which(node == 0)
+								      mask_flip = sample(index_edges, total_zero, replace = FALSE)
+								      node[mask_flip] = 1
+								      return(node)
 							      }
-							      noise = node_degree * noise
-							      mask_flip = sample(c(TRUE, FALSE), length(node), replace = TRUE, prob = c(noise, num_of_nodes - noise))
-							      node[mask_flip] = 1 - node[mask_flip]
-							      return(node)
+							      else{
+								      num_of_nodes = length(node)
+								      node_degree = sum(node > 0)
+								      if (node_degree == 0){
+									      node_degree = mean_degree
+								      }
+								      noise = node_degree * noise
+								      mask_flip = sample(c(TRUE, FALSE), length(node), replace = TRUE, prob = c(noise, num_of_nodes - noise))
+								      node[mask_flip] = 1 - node[mask_flip]
+								      return(node)
+							      }
 						      }, noise, mean_degree)
 				      return(t(network))
 			      }, list_network, noise_level)
@@ -452,9 +470,10 @@ TestNoise <- function(noise_level, ...){
 	initial_bound_delta = CheckParamKey(list_param, "initial_bound_delta")
 	epsilon = CheckParamKey(list_param, "epsilon")
 	max_iteration = CheckParamKey(list_param, "max_iteration")
+	is_rewire = if (is.null(list_param[["is_rewire"]])) {FALSE} else {list_param[["is_rewire"]]}
 	
 	# Induce Noise and Compute
-	list_network = InduceNoiseNetwork(list_network, noise_level)
+	list_network = InduceNoiseNetwork(list_network, noise_level, is_rewire = is_rewire)
 	return(BranchAndBound(list_network, traces_matrix, initial_bound_delta = initial_bound_delta, epsilon = epsilon, max_iteration = max_iteration))
 }
 postProcessGFP <- function(result){
@@ -533,6 +552,32 @@ test_noise_result_multiple_samples = runTestNoise(sequence_noise, postProcessGFP
 						  initial_bound_delta = 1e-5,
 						  epsilon = 1e-4,
 						  max_iteration = 1000)
+```
+
+```{r run_test_noise_rewire}
+no_of_cores = detectCores()
+sequence_noise = seq(0, 1, 1/20)
+noise_sample = 1
+test_noise_result_rewire = runTestNoise(sequence_noise, postProcessGFP, no_of_cores, noise_sample,
+					list_network = list_simulation_1$ER$network,
+					traces_matrix = list_simulation_1$ER$traces_matrix,
+					initial_bound_delta = 1e-5,
+					epsilon = 1e-4,
+					max_iteration = 1000,
+					is_rewire = TRUE)
+```
+
+```{r run_test_noise_multiple_samples_rewire}
+no_of_cores = detectCores()
+sequence_noise = seq(0, 1, 1/5)
+noise_sample = 10
+test_noise_result_multiple_samples_rewire = runTestNoise(sequence_noise, postProcessGFP, no_of_cores, noise_sample,
+							 list_network = list_simulation_1$ER$network,
+							 traces_matrix = list_simulation_1$ER$traces_matrix,
+							 initial_bound_delta = 1e-5,
+							 epsilon = 1e-4,
+							 max_iteration = 1000,
+							 is_rewire = TRUE)
 ```
 ```{r coba_new_algorithm}
 test_result = BranchAndBound(list_simulation_1$ER$network, list_simulation_1$ER$traces_matrix, initial_bound_delta = 1e-5, epsilon = 1e-4, max_iteration = 1000)
